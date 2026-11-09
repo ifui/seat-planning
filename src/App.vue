@@ -60,8 +60,18 @@ function openSequence(t: 'rank' | 'unit', rosterId: string): void {
       </nav>
 
       <div class="side-foot">
-        数据保存在本机浏览器 IndexedDB<br />
-        可在「排座项目」导出全量备份
+        <template v-if="state.storage === 'indexeddb'">
+          数据保存在本机浏览器 IndexedDB<br />
+          可在「排座项目」导出全量备份
+        </template>
+        <template v-else-if="state.storage === 'local'">
+          数据保存在本机浏览器 localStorage<br />
+          file:// 打开时自动启用，可长期保留
+        </template>
+        <template v-else>
+          当前浏览器禁止本地存储<br />
+          数据仅本次有效，请及时导出备份
+        </template>
       </div>
     </aside>
 

@@ -2,12 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import * as XLSX from 'xlsx'
 import type { Assignment, AttendStatus, Member, Project } from '../types'
-import { DEFAULT_RULESET, isSeatingElement } from '../types'
-import { layoutOf, removeProject, rosterOf, saveProject, saveRoster, state } from '../store'
-import { applyRulesToProject } from '../engine/seating'
-import { collectSeats, nowISO, uid } from '../engine/geometry'
+import { DEFAULT_RULESET } from '../types'
+import { getSnapshot, layoutOf, listSnapshots, removeProject, rosterOf, saveProject, saveRoster, saveSnapshot, state } from '../store'
+import { applyRulesToProject, seatIndexMap } from '../engine/seating'
+import { nowISO, seatsOfSheet, uid, type SeatRef } from '../engine/sheet'
 import { renderSeatChart } from '../engine/render'
-import { db, exportAllData, importAllData } from '../db'
+import { exportAllData, importAllData } from '../db'
 import SeatBoardPane from '../components/project/SeatBoardPane.vue'
 import RulesPanel from '../components/RulesPanel.vue'
 import { UiChart, UiSelect, UiModal, UiIcon as Icon } from '../ui'
@@ -70,11 +70,10 @@ const seatInfo = computed(() => {
   return out
 })
 
-const totalSeats = computed(() => (layout.value ? collectSeats(layout.value).length : 0))
-const disabledSeats = computed(() => {
-  if (!layout.value) return 0
-  return layout.value.elements.reduce((n, el) => n + (isSeatingElement(el) ? el.seats.filter((s) => s.disabled).length : 0), 0)
-})
+const allSeats = computed<SeatRef[]>(() => (layout.value ? seatsOfSheet(layout.value.sheet) : []))
+const seatIndex = computed(() => (layout.value ? seatIndexMap(layout.value) : new Map<string, SeatRef>()))
+const totalSeats = computed(() => allSeats.value.filter((s) => !s.disabled).length)
+const disabledSeats = computed(() => allSeats.value.filter((s) => s.disabled).length)
 const participants = computed(() => {
   if (!draft.value || !roster.value) return [] as Member[]
   const ids = draft.value.participantIds.length ? draft.value.participantIds : roster.value.members.filter((m) => m.active).map((m) => m.id)
@@ -170,14 +169,14 @@ const statusChart = computed<ChartOption | null>(() => {
 /** 区域就座：按布局分区汇总可用座位与已占用座位（含请假保留）。 */
 const zoneStats = computed(() => {
   if (!layout.value) return []
-  const seats = collectSeats(layout.value)
   const cap = new Map<string, number>()
   const occ = new Map<string, number>()
   const seatZone = new Map<string, string>()
-  for (const s of seats) {
+  for (const s of allSeats.value) {
+    if (s.disabled) continue
     const zid = s.zoneId ?? '__none'
     cap.set(zid, (cap.get(zid) ?? 0) + 1)
-    seatZone.set(s.seat.id, zid)
+    seatZone.set(s.seatId, zid)
   }
   for (const a of draft.value?.assignments ?? []) {
     const zid = seatZone.get(a.seatId)
@@ -257,13 +256,8 @@ const selectedMember = computed(() => {
   return a ? memberById.value.get(a.memberId) : undefined
 })
 const selectedSeatDisabled = computed(() => {
-  if (!layout.value || !selectedSeat.value) return false
-  for (const el of layout.value.elements) {
-    if (!isSeatingElement(el)) continue
-    const s = el.seats.find((x) => x.id === selectedSeat.value)
-    if (s) return !!s.disabled
-  }
-  return false
+  if (!selectedSeat.value) return false
+  return !!seatIndex.value.get(selectedSeat.value)?.disabled
 })
 const unseatedMembers = computed(() => {
   if (!draft.value) return [] as Member[]
@@ -279,7 +273,7 @@ const rosterOptions = computed(() =>
   state.rosters.map((r) => ({ value: r.id, label: r.name, hint: `${r.members.length} 人` }))
 )
 const layoutOptions = computed(() =>
-  state.layouts.map((l) => ({ value: l.id, label: l.name, hint: `${l.elements.length} 个元素` }))
+  state.layouts.map((l) => ({ value: l.id, label: l.name, hint: `${l.sheet.rows} 排 × ${l.sheet.cols} 列` }))
 )
 const STATUS_OPTIONS = [
   { value: 'present', label: '在位' },
@@ -395,7 +389,7 @@ async function runArrange(): Promise<void> {
   busy.value = true
   try {
     if (draft.value.assignments.length) {
-      await db.snapshots.add({
+      await saveSnapshot({
         id: uid('snap'),
         projectId: draft.value.id,
         createdAt: nowISO(),
@@ -417,13 +411,7 @@ async function runArrange(): Promise<void> {
 }
 
 function seatDisabled(id: string): boolean {
-  if (!layout.value) return false
-  for (const el of layout.value.elements) {
-    if (!isSeatingElement(el)) continue
-    const s = el.seats.find((x) => x.id === id)
-    if (s) return !!s.disabled
-  }
-  return false
+  return !!seatIndex.value.get(id)?.disabled
 }
 
 function swapSeats(a: string, b: string): void {
@@ -575,6 +563,50 @@ function exportPng(): void {
   }, 'image/png')
 }
 
+const STATUS_LABEL: Record<AttendStatus, string> = { present: '在位', leave: '请假', absent: '缺席', guest: '来宾' }
+
+/** 导出排座结果明细：排号/座号来自工作表，人员信息来自名册 */
+function exportExcel(): void {
+  if (!draft.value || !layout.value || !roster.value) return
+  const bySeat = new Map(draft.value.assignments.map((a) => [a.seatId, a]))
+  const zoneName = (id?: string) => layout.value!.zones.find((z) => z.id === id)?.name ?? ''
+  const unitName = (id?: string) => roster.value!.units.find((u) => u.id === id)?.name ?? ''
+  const rows: (string | number)[][] = [['排号', '座号', '姓名', '职级', '单位', '状态', '锁定', '区域']]
+  const seats = [...allSeats.value].sort((a, b) => a.row - b.row || a.seatNo - b.seatNo)
+  for (const s of seats) {
+    const zone = zoneName(s.zoneId)
+    if (s.disabled) {
+      rows.push([s.stage ? '主席台' : s.row + 1, s.seatNo || '', '固定空位', '', '', '不可用', '', zone])
+      continue
+    }
+    const a = bySeat.get(s.seatId)
+    const m = a ? memberById.value.get(a.memberId) : undefined
+    rows.push([
+      s.stage ? '主席台' : s.row + 1,
+      s.seatNo,
+      m?.name ?? '',
+      m ? rankById.value.get(m.rankId)?.name ?? '未定级' : '',
+      m ? unitName(m.unitId) : '',
+      a ? STATUS_LABEL[a.status] : '空位',
+      a?.locked ? '是' : '',
+      zone
+    ])
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+  ws['!cols'] = [{ wch: 8 }, { wch: 6 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 8 }, { wch: 6 }, { wch: 10 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '排座结果')
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+  const url = URL.createObjectURL(
+    new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  )
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${draft.value.name.replace(/\s+/g, '-')}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function printChart(): void {
   if (!draft.value || !layout.value || !roster.value) return
   const canvas = chartCanvas(2)
@@ -605,7 +637,13 @@ function printChart(): void {
 
 // ---- 备份 ----
 async function backup(): Promise<void> {
-  const json = await exportAllData()
+  let json = ''
+  try {
+    json = await exportAllData()
+  } catch {
+    flash('当前浏览器不支持本机数据库，备份不可用')
+    return
+  }
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
   a.download = `seat-planning-backup-${new Date().toISOString().slice(0, 10)}.json`
@@ -631,14 +669,14 @@ async function restore(e: Event): Promise<void> {
 const snapshots = ref<{ id: string; createdAt: string; label: string }[]>([])
 async function loadSnaps(): Promise<void> {
   if (!draft.value) return
-  const list = await db.snapshots.where('projectId').equals(draft.value.id).toArray()
+  const list = await listSnapshots(draft.value.id)
   snapshots.value = list.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 6)
 }
 watch(selectedId, () => loadSnaps(), { immediate: true })
 
 async function restoreSnap(id: string): Promise<void> {
   if (!draft.value) return
-  const s = await db.snapshots.get(id)
+  const s = await getSnapshot(id)
   if (!s) return
   draft.value.assignments = clone(s.assignments)
   flash('已恢复该版本（记得保存）')
@@ -864,6 +902,7 @@ async function restoreSnap(id: string): Promise<void> {
               </div>
               <div class="export-grid">
                 <button class="btn" @click="exportPng"><Icon name="image" />导出 PNG</button>
+                <button class="btn" @click="exportExcel"><Icon name="table" />导出 Excel</button>
                 <button class="btn" @click="printChart"><Icon name="print" />直接打印</button>
                 <button class="btn" @click="backup"><Icon name="backup" />全量备份</button>
                 <button class="btn" @click="restoreInput?.click()"><Icon name="restore" />导入备份</button>

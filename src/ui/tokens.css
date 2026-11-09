@@ -1,0 +1,103 @@
+/* ==========================================================================
+   Design tokens — 基础层，只放变量。
+   视觉规范提炼自 ai-fuly：单强调色（低饱和黛青）+ 白底 + 冷灰中性色阶，
+   8pt 间距节奏，6/8/12/16 圆角，极轻阴影，系统字体栈。
+   未来抽 UI 库时，这一层可以原样独立。
+   ========================================================================== */
+
+:root {
+  /* ---------- 品牌主色（浅色主题） ---------- */
+  --primary: #4a7c7b;
+  --primary-hover: #3f6a69;
+  --primary-pressed: #375c5b;
+  --primary-soft: #eaf1f1;
+  --primary-line: #cfe0df;
+  --on-primary: #ffffff;
+
+  /* ---------- 背景 / 面板 ---------- */
+  --bg: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-subtle: #fafbfc;
+  --bg-hover: #f3f4f6;
+  --bg-active: #e8eaee;
+
+  /* ---------- 文字 ---------- */
+  --text-primary: #1f2328;
+  --text-secondary: #4d5866;
+  --text-muted: #8b93a0;
+  --text-disabled: #a8aeb8;
+
+  /* ---------- 边框 / 分隔 ---------- */
+  --border: #e5e7eb;
+  --border-strong: #cdd2d9;
+  --border-soft: #f0f1f3;
+
+  /* ---------- 语义色 ---------- */
+  --success: #3f8a63;
+  --success-soft: #edf5f0;
+  --warning: #a8793b;
+  --warning-soft: #faf3e8;
+  --warning-line: #ecdcbf;
+  --danger: #bf524a;
+  --danger-soft: #fbefee;
+  --danger-line: #ead5d2;
+  --info: #4f7ba6;
+  --info-soft: #eff4fa;
+
+  /* ---------- 圆角 ---------- */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---------- 阴影（参考项目的极轻量做法） ---------- */
+  --shadow-sm: 0 1px 2px rgba(42, 41, 38, 0.05);
+  --shadow-md: 0 4px 14px rgba(42, 41, 38, 0.08);
+  --shadow-lg: 0 12px 32px rgba(42, 41, 38, 0.12);
+
+  /* ---------- 间距（8pt 节奏，4 为半档） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* ---------- 控件高度 ---------- */
+  --control-sm: 30px;
+  --control-md: 36px;
+  --control-lg: 42px;
+
+  /* ---------- 字号层级 ---------- */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 24px;
+  --lh-tight: 1.35;
+  --lh-base: 1.65;
+
+  /* ---------- 动效 ---------- */
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* ---------- 层级 ---------- */
+  --z-pop: 1000;
+  --z-modal: 900;
+
+  /* ---------- 字体栈（全部系统字体，离线可用） ---------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-serif: "Songti SC", "SimSun", "Source Han Serif SC", serif;
+  --font-kai: "KaiTi", "STKaiti", "Kaiti SC", serif;
+  --font-mono: "Consolas", "SFMono-Regular", "Menlo", monospace;
+
+  /* 画布滚动条预留宽度：缩放计算依赖它，避免滚动条出现时参与布局反馈 */
+  --canvas-scroll-gutter: 14px;
+}

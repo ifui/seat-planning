@@ -1,19 +1,18 @@
 import { computed, ref, type Ref } from 'vue'
-import type { BaseElement, GridConfig, LayerGroup, LayoutPackage, ZoneDef } from '../types'
+import type { LayoutPackage, Sheet, ZoneDef } from '../types'
 
 interface SnapshotData {
-  elements: BaseElement[]
+  sheet: Sheet
   zones: ZoneDef[]
-  groups?: LayerGroup[]
   canvas: LayoutPackage['canvas']
-  grid?: GridConfig
 }
 
 /**
- * 布局撤销 / 重做：以序列化快照保存「元素 + 区域 + 分组 + 画布 + 网格」五部分，
- * 保证分组关系与网格参数（行列、合并、元素归属）随撤销重做一起回滚。
+ * 布局撤销 / 重做：快照包含「工作表 + 区域 + 画布」。
+ * 工作表里已经含有行列数、行高列宽、合并区、单元格内容与座位归属，
+ * 因此撤销重做能完整回滚表格模型的任何改动。
  */
-export function useLayoutHistory(draft: Ref<LayoutPackage | null>, selectedIds: Ref<string[]>) {
+export function useLayoutHistory(draft: Ref<LayoutPackage | null>) {
   const history = ref<string[]>([])
   const hIndex = ref(-1)
 
@@ -23,13 +22,7 @@ export function useLayoutHistory(draft: Ref<LayoutPackage | null>, selectedIds: 
   function snapshotStr(): string {
     const l = draft.value
     if (!l) return ''
-    return JSON.stringify({
-      elements: l.elements,
-      zones: l.zones,
-      groups: l.groups ?? [],
-      canvas: l.canvas,
-      grid: l.grid,
-    })
+    return JSON.stringify({ sheet: l.sheet, zones: l.zones, canvas: l.canvas })
   }
 
   function resetHistory(): void {
@@ -51,13 +44,9 @@ export function useLayoutHistory(draft: Ref<LayoutPackage | null>, selectedIds: 
     const l = draft.value
     if (!l) return
     const data = JSON.parse(s) as SnapshotData
-    l.elements = data.elements
+    l.sheet = data.sheet
     l.zones = data.zones
-    l.groups = data.groups ?? []
     l.canvas = data.canvas
-    if (data.grid) l.grid = data.grid
-    else delete l.grid
-    selectedIds.value = selectedIds.value.filter((id) => l.elements.some((e) => e.id === id))
   }
 
   function undo(): void {

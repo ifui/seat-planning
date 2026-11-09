@@ -1,4 +1,4 @@
-// ---------- 名册与组织 ----------
+﻿// ---------- 名册与组织 ----------
 
 export interface RankDef {
   id: string
@@ -37,105 +37,85 @@ export interface RosterPlan {
   updatedAt: string
 }
 
-// ---------- 布局 ----------
+// ---------- 表格化布局 ----------
 
-export type ElementType = 'table' | 'hostTable' | 'podium' | 'lectern' | 'aisle' | 'zone' | 'label' | 'shape'
-export type ShapeKind = 'rect' | 'square' | 'circle' | 'diamond' | 'triangle'
+/** 单元格类型：座位 / 主席台座位 / 特殊块（不坐人） */
+export type CellKind = 'seat' | 'podium' | 'block'
 
-export interface Seat {
-  id: string
-  index: number
-  x: number
-  y: number
-  w: number
-  h: number
-  disabled?: boolean
-}
+/** 特殊块的用途，仅 kind === 'block' 时有效 */
+export type BlockRole = 'aisle' | 'lectern' | 'backdrop' | 'label'
 
-export interface ElementStyle {
+export interface CellStyle {
   fill?: string
   stroke?: string
   radius?: number
-  opacity?: number
   textColor?: string
-  /** 文字字体族（存完整 CSS font-family 栈，便于离线使用系统字体） */
-  fontFamily?: string
-  /** 文字字号（px） */
   fontSize?: number
-  /** 文字字重 300/400/500/600/700 */
   fontWeight?: number
-  /** 文字水平对齐 */
   textAlign?: 'left' | 'center' | 'right'
 }
 
-/** 元素在网格单元内的对齐方式：fill 铺满、center 居中、start/end 靠左/靠右（靠上/靠下） */
-export type GridAlign = 'fill' | 'center' | 'start' | 'end'
+/**
+ * 单元格。单元格可以是「座位」（单人位/双人位），
+ * 也可以是「特殊块」——合并后整块占位、不坐人（过道、讲台、背景板、标签）。
+ */
+export interface SheetCell {
+  kind: CellKind
+  /** kind === 'seat' | 'podium' 时：单人位 1 / 双人位 2 */
+  seats?: 1 | 2
+  /** 每个座位一个稳定 id，长度 = seats；排座分配按它引用，插删行列不会错位 */
+  seatIds?: string[]
+  /** 固定空位（保留但不能坐人） */
+  disabled?: boolean
+  /** 同桌编组：相邻同 tableId 的座位格绘制成连续桌带 */
+  tableId?: string
+  tableLabel?: string
+  zoneId?: string
+  /** kind === 'block' 时的用途 */
+  role?: BlockRole
+  /** 块内显示文字（讲台、背景板、标签） */
+  text?: string
+  style?: CellStyle
+  /** 锁定：不再被批量填充/清空覆盖 */
+  locked?: boolean
+}
 
-/** 元素在网格中的归属：锚点行列 + 跨格数 */
-export interface CellRef {
-  /** 行号，0 起 */
+export interface MergeRange {
   row: number
-  /** 列号，0 起 */
   col: number
-  /** 纵向跨几格，默认 1 */
-  rowSpan?: number
-  /** 横向跨几格，默认 1 */
-  colSpan?: number
+  rowSpan: number
+  colSpan: number
 }
 
 /**
- * 布局网格：先定行列，元素放进格子。
- * 排/列号由格子自身决定，排座直接读行列号，不再从坐标反推。
+ * 工作表：行列先定，内容稀疏存在 cells 里。
+ * 排号 = 行，座号 = 行内座位格顺序，均由格子自身决定。
  */
-export interface GridConfig {
+export interface Sheet {
   rows: number
   cols: number
-  colWidth: number
-  rowHeight: number
-  /** 单列覆写宽度（长度 = cols，缺省用 colWidth） */
-  colWidths?: number[]
-  /** 单行覆写高度（长度 = rows，缺省用 rowHeight） */
-  rowHeights?: number[]
+  defaultColWidth: number
+  defaultRowHeight: number
+  /** 逐列宽度，长度 = cols */
+  colWidths: number[]
+  /** 逐行高度，长度 = rows */
+  rowHeights: number[]
+  /** 表头行/列数（冻结显示行号列号） */
+  frozenRows: number
+  frozenCols: number
+  /** 工作表左上角在画布中的位置 */
   originX: number
   originY: number
-  /** 元素入格后四周留白 */
-  padding: number
-  /** 合并单元格：锚点 + 跨度；被合并区域按一个格子处理 */
-  merges: CellRef[]
+  /** 合并区：被合并的内部格不存内容，只存锚点 */
+  merges: MergeRange[]
+  /** 稀疏单元格，键 "row:col" */
+  cells: Record<string, SheetCell>
 }
 
-export interface BaseElement {
-  id: string
-  type: ElementType
-  x: number
-  y: number
-  w: number
-  h: number
-  rotation?: number
-  z?: number
-  locked?: boolean
-  /** 所属图层分组 id，为空表示未分组 */
-  groupId?: string
-  style?: ElementStyle
-  /** 画布上直接显示的文字（讲解台、标注、区域、图形） */
-  text?: string
-  /** 图形元素的形状，仅 type === 'shape' 时有效 */
-  shape?: ShapeKind
-  /** 所属网格单元；为空表示游离元素（不参与网格排号，仍按坐标排） */
-  cell?: CellRef
-  /** 入格后在单元内的对齐方式，默认 fill */
-  align?: GridAlign
-  /** 入格后单元格留白，覆盖网格默认 padding */
-  pad?: number
-}
-
-export interface SeatingElement extends BaseElement {
-  type: 'table' | 'hostTable' | 'lectern'
-  capacity: 1 | 2
-  seats: Seat[]
-  zoneId?: string
-  label?: string
-  arrangeMode?: 'podium' | 'normal'
+export interface CanvasConfig {
+  width: number
+  height: number
+  background: string
 }
 
 export interface ZoneDef {
@@ -145,68 +125,20 @@ export interface ZoneDef {
   ruleTag?: 'podium' | 'front' | 'vip' | 'staff' | 'other'
 }
 
-export interface CanvasConfig {
-  width: number
-  height: number
-  background: string
-  /** 旧版栅格配置，仅为兼容已保存/导入的布局包，画布不再渲染栅格 */
-  grid?: { size: number; visible: boolean }
-}
-
-/** 图层分组：成员通过 BaseElement.groupId 关联 */
-export interface LayerGroup {
-  id: string
-  name: string
-  /** 图层列表中是否折叠 */
-  collapsed?: boolean
-  /** 锁定分组等同锁定组内全部元素 */
-  locked?: boolean
-}
-
 export interface LayoutPackage {
-  schemaVersion: '1.0'
+  schemaVersion: '2.0'
   id: string
   name: string
   canvas: CanvasConfig
+  sheet: Sheet
   zones: ZoneDef[]
-  elements: BaseElement[]
-  groups?: LayerGroup[]
-  /** 布局网格；为空表示自由布局（旧数据即此形态） */
-  grid?: GridConfig
   createdAt: string
   updatedAt: string
-}
-
-export function isSeatingElement(e: BaseElement): e is SeatingElement {
-  return e.type === 'table' || e.type === 'hostTable' || e.type === 'lectern'
-}
-
-export function isShapeElement(e: BaseElement): e is BaseElement & { type: 'shape'; shape: ShapeKind } {
-  return e.type === 'shape'
-}
-
-/** 支持就地编辑文字的元素类型 */
-export function hasEditableText(e: BaseElement): boolean {
-  return e.type === 'label' || e.type === 'podium' || e.type === 'zone' || e.type === 'shape' || e.type === 'aisle'
-}
-
-/** 元素显示的文案（图形/标注用 text，区域用 name，其余用 label） */
-export function elementText(e: BaseElement): string {
-  const any = e as any
-  return any.text ?? any.label ?? any.name ?? ''
 }
 
 // ---------- 规则与项目 ----------
 
 export type AttendStatus = 'present' | 'leave' | 'absent' | 'guest'
-
-export interface Assignment {
-  seatId: string
-  memberId: string
-  status: AttendStatus
-  locked: boolean
-  note?: string
-}
 
 export interface TierRule {
   id: string
@@ -235,6 +167,14 @@ export interface RuleSet {
   keepListOrder: boolean
 }
 
+export interface Assignment {
+  seatId: string
+  memberId: string
+  status: AttendStatus
+  locked: boolean
+  note?: string
+}
+
 export interface Project {
   id: string
   name: string
@@ -242,11 +182,8 @@ export interface Project {
   layoutPackageId: string
   ruleSet: RuleSet
   assignments: Assignment[]
-  /** 本项目的参会名单（不填则默认全名册在位人员） */
   participantIds: string[]
-  /** 名单中未安排座位的人员（含库外新建/忽略决定） */
   unassigned: string[]
-  /** Excel 导入后待确认的库外姓名 */
   pendingNames: string[]
   status: 'draft' | 'seated'
   createdAt: string

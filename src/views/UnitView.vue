@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { RosterPlan, UnitNode } from '../types'
 import { saveRoster, state } from '../store'
-import { uid } from '../engine/geometry'
+import { uid } from '../engine/sheet'
 import { UiSelect, UiModal } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })

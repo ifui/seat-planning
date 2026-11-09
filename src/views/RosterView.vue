@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Member, RosterPlan, UnitNode } from '../types'
 import { removeRoster, saveRoster, state } from '../store'
-import { nowISO, uid } from '../engine/geometry'
+import { nowISO, uid } from '../engine/sheet'
 import { UiChart, UiIcon, UiIconButton, UiSelect, UiModal } from '../ui'
 import { chartAxisText, chartColors, chartFont, chartTooltip, type ChartOption } from '../ui/charts'
 

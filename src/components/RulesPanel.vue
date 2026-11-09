@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { LayoutPackage, RankDef, RuleSet, TierRule } from '../types'
-import { uid } from '../engine/geometry'
+import { uid } from '../engine/sheet'
 import UiSelect from '../ui/components/UiSelect.vue'
 
 const props = defineProps<{
@@ -103,7 +103,7 @@ function removeTier(id: string): void {
         <div class="field">
           <label>排号来源</label>
           <div class="caption" style="margin: 0; padding-top: 6px">
-            {{ layout.grid ? `网格 ${layout.grid.rows} 排 × ${layout.grid.cols} 列` : '自由布局（按坐标聚类）' }}
+            {{ `表格 ${layout.sheet.rows} 排 × ${layout.sheet.cols} 列` }}
           </div>
         </div>
       </div>

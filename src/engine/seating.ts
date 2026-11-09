@@ -1,9 +1,7 @@
 import type {
-  Assignment, AttendStatus, BaseElement, LayoutPackage, Member, Project, RosterPlan, RuleSet, SeatingElement, TierRule
+  Assignment, AttendStatus, LayoutPackage, Member, Project, RosterPlan, RuleSet
 } from '../types'
-import { isSeatingElement } from '../types'
-import { collectSeats, type AbsSeat } from './geometry'
-import { seatRowsFor } from './grid'
+import { seatsInRow, type SeatRef } from './sheet'
 
 export interface ArrangeInput {
   roster: RosterPlan
@@ -23,11 +21,11 @@ export interface ArrangeResult {
 }
 
 /** 主席台顺序：1 号居中；2 号在就座者左侧（画布 x+），一左一右交替 */
-export function podiumOrder(seats: AbsSeat[], evenCenterSide: 'left' | 'right' = 'left'): AbsSeat[] {
-  const list = [...seats].sort((a, b) => a.cx - b.cx)
+export function podiumOrder(seats: SeatRef[], evenCenterSide: 'left' | 'right' = 'left'): SeatRef[] {
+  const list = [...seats].sort((a, b) => a.x - b.x)
   const n = list.length
   if (!n) return []
-  const out: AbsSeat[] = []
+  const out: SeatRef[] = []
   if (n % 2 === 1) {
     const c = (n - 1) / 2
     out.push(list[c])
@@ -58,14 +56,14 @@ export function podiumOrder(seats: AbsSeat[], evenCenterSide: 'left' | 'right' =
 }
 
 /** 台下横向顺序：居中向两侧（观众视角以左为先）；mirror 为 true 时左右镜像（主席台视角） */
-export function hallOrder(seats: AbsSeat[], mode: RuleSet['hallOrder'], mirror = false): AbsSeat[] {
-  const list = [...seats].sort((a, b) => a.cx - b.cx)
+export function hallOrder(seats: SeatRef[], mode: RuleSet['hallOrder'], mirror = false): SeatRef[] {
+  const list = [...seats].sort((a, b) => a.x - b.x)
   if (mirror) list.reverse()
   const n = list.length
   if (!n) return []
   if (mode === 'left-to-right') return list
   if (mode === 'right-to-left') return [...list].reverse()
-  const out: AbsSeat[] = []
+  const out: SeatRef[] = []
   if (n % 2 === 1) {
     const c = (n - 1) / 2
     out.push(list[c])
@@ -130,7 +128,6 @@ function sortCandidates(members: Member[], roster: RosterPlan, rules: RuleSet): 
   })
   if (rules.unitOrder === 'continuous' || !rules.keepListOrder) return base
 
-  // 交替穿插：同一职级内，各单位轮流取人
   const out: Member[] = []
   let i = 0
   while (i < base.length) {
@@ -159,11 +156,11 @@ function sortCandidates(members: Member[], roster: RosterPlan, rules: RuleSet): 
   return out
 }
 
-function tierRanksFor(seat: AbsSeat, rowIndex: number, rules: RuleSet): string[] | null {
-  const rulesByZone = rules.tiers.filter((t) => t.by === 'zone' && t.zoneId === seat.zoneId)
-  if (rulesByZone.length) {
+function tierRanksFor(seat: SeatRef, rowIndex: number, rules: RuleSet): string[] | null {
+  const byZone = rules.tiers.filter((t) => t.by === 'zone' && t.zoneId === seat.zoneId)
+  if (byZone.length) {
     const ids = new Set<string>()
-    for (const t of rulesByZone) for (const id of t.rankIds) ids.add(id)
+    for (const t of byZone) for (const id of t.rankIds) ids.add(id)
     return [...ids]
   }
   const rowRules = rules.tiers.filter((t) => t.by === 'row' && rowIndex >= (t.from ?? 1) && rowIndex <= (t.to ?? 999))
@@ -186,20 +183,26 @@ export function arrange(input: ArrangeInput): ArrangeResult {
   const pool: Member[] = []
   for (const id of participants) {
     const m = memberById.get(id)
-    if (!m) { eliminated.push(id); continue }
+    if (!m) {
+      eliminated.push(id)
+      continue
+    }
     const st = statuses[id] ?? 'present'
-    if (st === 'leave' || st === 'absent') { continue }
+    if (st === 'leave' || st === 'absent') continue
     pool.push(m)
   }
 
-  const allSeats = collectSeats(layout)
-  const stageSeats = allSeats.filter((s) => s.stage)
-  const hallSeats = allSeats.filter((s) => !s.stage)
+  const allSeats: SeatRef[] = []
+  for (let row = 0; row < layout.sheet.rows; row++) allSeats.push(...seatsInRow(layout.sheet, row))
+  const usable = allSeats.filter((s) => !s.disabled)
+  const stageSeats = usable.filter((s) => s.stage)
+  const hallSeats = usable.filter((s) => !s.stage)
 
   // 锁定的分配优先落位；请假前移（shift）时不再保留请假者的位置
   const locked = (input.keepLocked ?? []).filter((a) => {
+    if (!allSeats.some((s) => s.seatId === a.seatId)) return false
     if (statuses[a.memberId] === 'leave' && rules.podiumLeave === 'shift') return false
-    return allSeats.some((s) => s.seat.id === a.seatId) && (a.locked || statuses[a.memberId] === 'leave')
+    return a.locked || statuses[a.memberId] === 'leave'
   })
   const lockedSeatIds = new Set<string>()
   const lockedMemberIds = new Set<string>()
@@ -212,35 +215,35 @@ export function arrange(input: ArrangeInput): ArrangeResult {
   }
   const remainingPool = sortCandidates(pool.filter((m) => !lockedMemberIds.has(m.id)), roster, rules)
 
-  // 主席台：按主席台顺序逐座落位（有网格时排号来自格子，不再按坐标聚类）
-  const stageRows = seatRowsFor(layout, stageSeats.filter((s) => !lockedSeatIds.has(s.seat.id)))
-  const stageQueue: AbsSeat[] = []
-  for (const row of stageRows) stageQueue.push(...podiumOrder(row.seats, rules.evenCenterSide))
+  // 主席台：按行分组，每行按主席台顺序逐座落位
+  const stageQueue: SeatRef[] = []
+  const stageRows = new Set(stageSeats.map((s) => s.row))
+  for (const row of [...stageRows].sort((a, b) => a - b)) {
+    const rowSeats = stageSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId))
+    stageQueue.push(...podiumOrder(rowSeats, rules.evenCenterSide))
+  }
 
   const used = new Set<string>(lockedMemberIds)
   const seatToAssignment = new Map(assignments.map((a) => [a.seatId, a]))
 
-  const takeFor = (seat: AbsSeat, allowed: string[] | null): Member | null => {
-    if (seatToAssignment.has(seat.seat.id)) return null
-    if (statuses && rules.podiumLeave === 'hold' && seat.stage) {
-      // 留空：已被锁定的请假席位由 locked 逻辑处理
-    }
+  const takeFor = (seat: SeatRef, allowed: string[] | null): Member | null => {
+    if (seatToAssignment.has(seat.seatId) || seat.disabled) return null
     const idx = remainingPool.findIndex((m) => !used.has(m.id) && (!allowed || allowed.includes(m.rankId)))
     if (idx < 0) return null
     const m = remainingPool[idx]
     used.add(m.id)
     const a: Assignment = {
-      seatId: seat.seat.id,
+      seatId: seat.seatId,
       memberId: m.id,
       status: statuses[m.id] ?? 'present',
       locked: false
     }
     assignments.push(a)
-    seatToAssignment.set(seat.seat.id, a)
+    seatToAssignment.set(seat.seatId, a)
     return m
   }
 
-  // 主席台同样要把「分层规则没勾职级」归一成不限职级。
+  // 主席台同样要把「分层规则没勾职级」归一成不限职级，
   // 否则 allowed=[] 会让 takeFor 判定谁都不可用，整块主席台静默空着。
   for (const seat of stageQueue) {
     let allowed = tierRanksFor(seat, 0, rules)
@@ -248,26 +251,22 @@ export function arrange(input: ArrangeInput): ArrangeResult {
     takeFor(seat, allowed)
   }
 
-  // 台下：按排从上到下，逐排使用规则。有网格时 rowIndex 直接取格子行号 + 1
+  // 台下：按排从上到下，排号直接取格子行号 + 1
   const mirror = rules.viewpoint === 'podium'
-  const hallRows = seatRowsFor(layout, hallSeats.filter((s) => !lockedSeatIds.has(s.seat.id)))
-  hallRows.forEach((row) => {
-    const ordered = hallOrder(row.seats, rules.hallOrder, mirror)
+  const hallRows = new Set(hallSeats.map((s) => s.row))
+  for (const row of [...hallRows].sort((a, b) => a - b)) {
+    const rowSeats = hallSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId))
+    const ordered = hallOrder(rowSeats, rules.hallOrder, mirror)
     for (const seat of ordered) {
-      let allowed = tierRanksFor(seat, row.rowIndex, rules)
+      let allowed = tierRanksFor(seat, row + 1, rules)
       if (allowed && allowed.length === 0) allowed = null
       takeFor(seat, allowed)
     }
-  })
-  if (layout.grid) {
-    const stray = allSeats.filter((s) => s.gridRow === undefined).length
-    if (stray > 0) warnings.push(`有 ${stray} 个座位未入网格，已按坐标排到网格之后`)
   }
 
   const unassigned = remainingPool.filter((m) => !used.has(m.id)).map((m) => m.id)
 
-  const totalSeats = allSeats.length
-  const freeSeats = totalSeats - assignments.filter((a) => a.status !== 'leave').length
+  const freeSeats = usable.length - assignments.filter((a) => a.status !== 'leave').length
   if (freeSeats > 0 && unassigned.length === 0 && participants.length > 0) {
     warnings.push(`还有 ${freeSeats} 个座位空着`)
   }
@@ -276,11 +275,11 @@ export function arrange(input: ArrangeInput): ArrangeResult {
   return { assignments, unassigned, warnings }
 }
 
-export function seatIndexMap(layout: LayoutPackage): Map<string, { seatId: string; element: BaseElement }> {
-  const out = new Map<string, { seatId: string; element: BaseElement }>()
-  for (const el of layout.elements) {
-    if (!isSeatingElement(el)) continue
-    for (const s of el.seats) out.set(s.id, { seatId: s.id, element: el })
+/** 座位索引：seatId → 座位引用（含行列与几何） */
+export function seatIndexMap(layout: LayoutPackage): Map<string, SeatRef> {
+  const out = new Map<string, SeatRef>()
+  for (let row = 0; row < layout.sheet.rows; row++) {
+    for (const s of seatsInRow(layout.sheet, row)) out.set(s.seatId, s)
   }
   return out
 }

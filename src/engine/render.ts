@@ -1,5 +1,5 @@
 import type { Assignment, LayoutPackage, Member, RosterPlan, SheetCell } from '../types'
-import { cellRect, cellAt, isCovered, mergeAt, seatsInRow, sheetSize } from './sheet'
+import { cellRect, cellAt, collectBorderLines, isCovered, mergeAt, seatsInRow, sheetSize } from './sheet'
 
 export interface ChartOptions {
   layout: LayoutPackage
@@ -9,6 +9,16 @@ export interface ChartOptions {
   subtitle?: string
   scale?: number
   mode?: 'seated' | 'layout'
+  /** 是否在座位左上角画序号，与画布开关一致 */
+  showSeatNumbers?: boolean
+  /** 座位下方信息：职级（缺省显示） */
+  showRank?: boolean
+  /** 座位下方信息：职务（缺省隐藏） */
+  showDuty?: boolean
+  /** 座位下方信息：单位（缺省隐藏） */
+  showUnit?: boolean
+  /** 序号取座位顺序（与画布 hit 顺序一致）；缺省用排内座号 */
+  seatNumbers?: Map<string, number>
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -37,10 +47,10 @@ function fitFont(ctx: CanvasRenderingContext2D, text: string, maxW: number, base
 }
 
 const BLOCK_FILL: Record<string, string> = {
-  aisle: '#F0F2F3',
-  lectern: '#E7ECEF',
-  backdrop: '#E4E9EC',
-  label: '#F7F8F9'
+  aisle: '#F4F6F7',
+  lectern: '#E8EEF0',
+  backdrop: '#DFE7EA',
+  label: '#FCFDFD'
 }
 
 export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
@@ -61,6 +71,27 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   ctx.scale(scale, scale)
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, W, H)
+
+  // 固定空位用的斜纹填充，和界面保持一致
+  const hatch = (() => {
+    const c = document.createElement('canvas')
+    c.width = 8
+    c.height = 8
+    const p = c.getContext('2d')!
+    p.fillStyle = '#F3F4F4'
+    p.fillRect(0, 0, 8, 8)
+    p.strokeStyle = '#E7E9E9'
+    p.lineWidth = 1
+    p.beginPath()
+    p.moveTo(-2, 10)
+    p.lineTo(10, -2)
+    p.stroke()
+    p.beginPath()
+    p.moveTo(2, 10)
+    p.lineTo(10, 2)
+    p.stroke()
+    return ctx.createPattern(c, 'repeat')!
+  })()
 
   ctx.fillStyle = '#26333A'
   const title = opts.title || '座位表'
@@ -84,6 +115,10 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   ctx.translate(pad, headerH)
   const memberById = new Map<string, Member>(roster.members.map((m) => [m.id, m]))
   const rankById = new Map(roster.ranks.map((r) => [r.id, r]))
+  const unitById = new Map(roster.units.map((u) => [u.id, u]))
+  const showRank = opts.showRank !== false
+  const showDuty = opts.showDuty === true
+  const showUnit = opts.showUnit === true
   const assignBySeat = new Map<string, Assignment>()
   for (const a of assignments) assignBySeat.set(a.seatId, a)
 
@@ -106,7 +141,7 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
       const m = mergeAt(s, row, col)
       const rect = cellRect(s, row, col, m?.rowSpan ?? 1, m?.colSpan ?? 1)
       ctx.fillStyle = cell.style?.fill ?? BLOCK_FILL[cell.role ?? 'label'] ?? '#F7F8F9'
-      roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 6)
+      roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 0)
       ctx.fill()
       if (cell.text) {
         ctx.fillStyle = cell.style?.textColor ?? '#7C8A90'
@@ -126,11 +161,9 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
       const mbr = a ? memberById.get(a.memberId) : undefined
       const rank = mbr ? rankById.get(mbr.rankId) : undefined
       if (seat.disabled) {
-        ctx.fillStyle = '#F4F4F3'
-        ctx.strokeStyle = '#E1E0DA'
-        roundRect(ctx, seat.x, seat.y, seat.w, seat.h, 6)
+        ctx.fillStyle = hatch
+        roundRect(ctx, seat.x, seat.y, seat.w, seat.h, 0)
         ctx.fill()
-        ctx.stroke()
         ctx.fillStyle = '#A5A299'
         ctx.font = '400 10px "PingFang SC", "Microsoft YaHei", sans-serif'
         ctx.textAlign = 'center'
@@ -138,27 +171,53 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
         if (seat.w > 34 && seat.h > 22) ctx.fillText('空置', seat.x + seat.w / 2, seat.y + seat.h / 2)
         continue
       }
-      ctx.fillStyle = mode === 'layout' ? '#FAFBFB' : '#FFFFFF'
-      ctx.strokeStyle = seat.stage ? '#C9D3DB' : '#DDE2E3'
-      ctx.lineWidth = 1
-      roundRect(ctx, seat.x, seat.y, seat.w, seat.h, 6)
+      const isLeave = mode === 'seated' && a?.status === 'leave'
+      let fill = seat.stage ? '#E6EFF0' : '#F5F9F9'
+      if (mode === 'seated') {
+        if (mbr) fill = isLeave ? '#FBF5E9' : '#F4F9F8'
+        else fill = '#FCFDFD'
+      }
+      ctx.fillStyle = fill
+      // 直角；不画默认描边，导出只保留用户显式设置的边框
+      roundRect(ctx, seat.x, seat.y, seat.w, seat.h, 0)
       ctx.fill()
-      ctx.stroke()
 
       if (mbr && mode === 'seated') {
-        const isLeave = a?.status === 'leave'
-        const nmSize = fitFont(ctx, mbr.name, seat.w - 6, 13, 8)
-        ctx.fillStyle = isLeave ? '#A8B0B2' : '#26333A'
+        // 用很淡的职级底色区分，不再画左侧彩色竖线
+        ctx.save()
+        ctx.globalAlpha = 0.1
+        ctx.fillStyle = isLeave ? '#C9A227' : rank?.color || '#5B7C7B'
+        ctx.fillRect(seat.x, seat.y, seat.w, seat.h)
+        ctx.restore()
+        const meta: string[] = []
+        if (showRank && rank) meta.push(rank.name)
+        if (showDuty && mbr.duty) meta.push(mbr.duty)
+        if (showUnit) {
+          const unit = mbr.unitId ? unitById.get(mbr.unitId) : undefined
+          if (unit) meta.push(unit.name)
+        }
+        const metaSize = 8
+        const lineH = 8.6
+        const metaH = meta.length * lineH
+        const nmSize = fitFont(ctx, mbr.name, seat.w - 12, seat.h > 30 ? 11 : 10, 8)
+        ctx.fillStyle = isLeave ? '#8C7A4A' : '#26333A'
         ctx.font = `400 ${nmSize}px "PingFang SC", "Microsoft YaHei", sans-serif`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
-        const ty = seat.h > 40 && rank ? seat.y + seat.h / 2 - 6 : seat.y + seat.h / 2
-        ctx.fillText(mbr.name, seat.x + seat.w / 2, ty)
-        if (rank && seat.h > 34) {
-          ctx.fillStyle = rank.color
-          ctx.font = '400 9px "PingFang SC", "Microsoft YaHei", sans-serif'
-          ctx.fillText(rank.name, seat.x + seat.w / 2, seat.y + seat.h / 2 + 10)
+        // 姓名居中；信息行按开关逐行显示，裁剪在座位格内避免溢出
+        const cx = seat.x + seat.w / 2
+        const nameY = seat.y + seat.h / 2 - metaH / 2
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(seat.x + 1, seat.y + 1, Math.max(1, seat.w - 2), Math.max(1, seat.h - 2))
+        ctx.clip()
+        ctx.fillText(mbr.name, cx, nameY)
+        for (let i = 0; i < meta.length; i++) {
+          ctx.fillStyle = i === 0 && showRank && rank ? rank.color : '#7C8A90'
+          ctx.font = `400 ${metaSize}px "PingFang SC", "Microsoft YaHei", sans-serif`
+          ctx.fillText(meta[i], cx, nameY + nmSize / 2 + lineH * (i + 0.55))
         }
+        ctx.restore()
       } else if (mode === 'layout') {
         ctx.fillStyle = '#B3BCBE'
         ctx.font = '400 10px "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -166,8 +225,42 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
         ctx.textBaseline = 'middle'
         ctx.fillText(`${seat.seatNo}`, seat.x + seat.w / 2, seat.y + seat.h / 2)
       }
+      // 左上角座位序号：与画布一致，受开关控制
+      if (mode === 'seated' && opts.showSeatNumbers) {
+        const no = opts.seatNumbers?.get(seat.seatId) ?? seat.seatNo
+        ctx.fillStyle = '#A8B1B5'
+        ctx.font = '400 8px "PingFang SC", "Microsoft YaHei", sans-serif'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'top'
+        ctx.fillText(`${no}`, seat.x + 3, seat.y + 1)
+      }
     }
   }
+
+  // 边框：整表统一收集并去重（与画布同一份数据），按导出倍率对齐设备像素
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  const ox = Math.round(pad * scale)
+  const oy = Math.round(headerH * scale)
+  for (const line of collectBorderLines(s)) {
+    const wpx = Math.max(1, Math.round(line.width * scale))
+    const offset = wpx % 2 === 1 ? 0.5 : 0
+    const snap = (v: number): number => Math.round(v * scale - offset) + offset
+    ctx.strokeStyle = line.color
+    ctx.lineWidth = wpx
+    ctx.setLineDash(
+      line.dash === 'dashed'
+        ? [6 * scale, 4 * scale]
+        : line.dash === 'dotted'
+          ? [2 * scale, 3 * scale]
+          : []
+    )
+    ctx.beginPath()
+    ctx.moveTo(ox + snap(line.x1), oy + snap(line.y1))
+    ctx.lineTo(ox + snap(line.x2), oy + snap(line.y2))
+    ctx.stroke()
+  }
+  ctx.restore()
 
   return canvas
 }

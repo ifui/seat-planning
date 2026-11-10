@@ -34,8 +34,9 @@ function position(): void {
   const el = trigger.value
   if (!el) return
   const r = el.getBoundingClientRect()
-  const width = Math.max(r.width, 172)
-  const rowH = 36
+  const width = Math.max(r.width, 180)
+  // 有 hint 的选项会换行显示说明，估算时按两行高度
+  const rowH = props.options.some((o) => o.hint) ? 54 : 36
   const estimated = Math.min(props.options.length, 9) * rowH + 12
   let top = r.bottom + 6
   if (top + estimated > window.innerHeight - 8) {

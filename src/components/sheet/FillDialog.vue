@@ -13,11 +13,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
-  (e: 'fill', payload: { kind: 'seat' | 'podium'; seats: 1 | 2; tablePerRow: boolean; tableLabel: string; zoneId: string }): void
+  (e: 'fill', payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string; zoneId: string }): void
 }>()
 
 const kind = ref<'seat' | 'podium'>('seat')
-const seats = ref<1 | 2>(2)
 const tablePerRow = ref(true)
 const tableLabel = ref('')
 const zoneId = ref('')
@@ -27,7 +26,6 @@ watch(
   (v) => {
     if (v) {
       kind.value = 'seat'
-      seats.value = 2
       tablePerRow.value = true
       tableLabel.value = ''
       zoneId.value = ''
@@ -43,7 +41,8 @@ const zoneOptions = computed(() => [
 function submit(): void {
   emit('fill', {
     kind: kind.value,
-    seats: seats.value,
+    // 布局只铺单人桌位；一桌坐几人由排座项目按会议设置
+    seats: 1,
     tablePerRow: tablePerRow.value,
     tableLabel: tableLabel.value.trim(),
     zoneId: zoneId.value
@@ -67,13 +66,6 @@ function submit(): void {
           <button :class="{ on: kind === 'podium' }" @click="kind = 'podium'">主席台</button>
         </div>
       </div>
-      <div class="fd-row">
-        <span class="fd-label">座位规格</span>
-        <div class="fd-seg">
-          <button :class="{ on: seats === 1 }" @click="seats = 1">单人位</button>
-          <button :class="{ on: seats === 2 }" @click="seats = 2">双人位</button>
-        </div>
-      </div>
       <label class="fd-check">
         <input v-model="tablePerRow" type="checkbox" />
         <span>整行视作同一张条桌（桌带连续绘制）</span>
@@ -86,6 +78,7 @@ function submit(): void {
         <span>区域</span>
         <UiSelect v-model="zoneId" :options="zoneOptions" size="sm" />
       </label>
+      <p class="fd-hint">填充只决定座位位置；一桌坐几人请在排座项目中设置。</p>
     </div>
     <template #footer>
       <UiButton variant="ghost" size="sm" @click="emit('update:modelValue', false)">取消</UiButton>
@@ -113,4 +106,5 @@ function submit(): void {
   color: var(--text-primary); outline: none;
 }
 .fd-field input:focus { border-color: var(--primary); }
+.fd-hint { margin: -2px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-disabled); }
 </style>

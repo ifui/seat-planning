@@ -10,7 +10,13 @@ export interface CellView {
   label: string
   seats: number
   tone: string
+  disabled: boolean
   fill?: string
+  stroke?: string
+  strokeStyle?: 'solid' | 'dashed' | 'dotted' | 'none'
+  strokeWidth?: number
+  borders?: ('top' | 'right' | 'bottom' | 'left')[]
+  zoneId?: string
   textColor?: string
   align?: string
 }

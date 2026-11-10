@@ -11,14 +11,20 @@ const props = defineProps<{
   selection: CellRange
   active: { row: number; col: number }
   zones: ZoneDef[]
+  /** 区域管理里正在高亮的区域 */
+  highlightZoneId?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'patch', patch: Partial<SheetCell>): void
   (e: 'style', patch: CellStyle): void
+  /** 取色器拖动中的实时预览，不写撤销历史 */
+  (e: 'preview-style', patch: CellStyle): void
   (e: 'select-zone', zoneId: string): void
+  (e: 'focus-zone', zoneId: string): void
   (e: 'add-zone'): void
   (e: 'delete-zone', id: string): void
+  (e: 'rename-zone', id: string): void
 }>()
 
 const range = computed(() => ({
@@ -40,11 +46,22 @@ const kindLabel = computed(() => {
   const c = anchorCell.value
   if (!c) return '空白'
   if (c.kind === 'podium') return '主席台座位'
-  if (c.kind === 'seat') return c.seats === 2 ? '座位 · 双人位' : '座位 · 单人位'
+  if (c.kind === 'seat') return '座位'
   return `特殊块 · ${blockRoleLabel(c.role)}`
 })
 
 const isSeat = computed(() => anchorCell.value?.kind === 'seat' || anchorCell.value?.kind === 'podium')
+
+/** 每个区域占用的格子数，用于区域管理里的反向查看 */
+const zoneCellCount = computed(() => {
+  const out: Record<string, number> = {}
+  for (const cell of Object.values(props.sheet.cells)) {
+    if (!cell.zoneId) continue
+    out[cell.zoneId] = (out[cell.zoneId] ?? 0) + 1
+  }
+  return out
+})
+
 const isBlock = computed(() => anchorCell.value?.kind === 'block')
 
 const seatTotal = computed(() => {
@@ -72,12 +89,28 @@ function setText(e: Event): void {
   emit('patch', { text: (e.target as HTMLInputElement).value })
 }
 
+function colorOf(e: Event): string {
+  return (e.target as HTMLInputElement).value
+}
+
+function previewFill(e: Event): void {
+  emit('preview-style', { fill: colorOf(e) })
+}
+
 function setFill(e: Event): void {
-  emit('style', { fill: (e.target as HTMLInputElement).value })
+  emit('style', { fill: colorOf(e) })
+}
+
+function clearFill(): void {
+  emit('style', { fill: undefined })
+}
+
+function previewTextColor(e: Event): void {
+  emit('preview-style', { textColor: colorOf(e) })
 }
 
 function setTextColor(e: Event): void {
-  emit('style', { textColor: (e.target as HTMLInputElement).value })
+  emit('style', { textColor: colorOf(e) })
 }
 
 function toggleDisabled(): void {
@@ -121,6 +154,7 @@ function onZone(v: string): void {
         <span>锁定（不被批量覆盖）</span>
         <input type="checkbox" :checked="!!anchorCell?.locked" @change="toggleLocked" />
       </label>
+      <p class="si-hint">这里只定义座位位置；一桌坐几人请在排座项目中设置。</p>
     </section>
 
     <section v-if="isBlock" class="si-block">
@@ -134,26 +168,64 @@ function onZone(v: string): void {
     <section class="si-block">
       <div class="si-title">区域</div>
       <UiSelect :model-value="anchorCell?.zoneId ?? ''" :options="zoneOptions" size="sm" @update:model-value="onZone" />
+      <UiButton
+        v-if="anchorCell?.zoneId"
+        variant="ghost"
+        size="sm"
+        @click="emit('select-zone', '')"
+      >清除选区归属</UiButton>
       <div class="si-zones">
-        <div v-for="z in zones" :key="z.id" class="si-zone">
+        <button
+          v-for="z in zones"
+          :key="z.id"
+          type="button"
+          class="si-zone"
+          :class="{ 'is-on': highlightZoneId === z.id }"
+          :title="`在画布上高亮「${z.name}」包含的格子`"
+          @click="emit('focus-zone', z.id)"
+        >
           <i :style="{ background: z.color }" />
           <span>{{ z.name }}</span>
-          <button class="si-zone-del" title="删除区域" @click="emit('delete-zone', z.id)">×</button>
-        </div>
+          <em>{{ zoneCellCount[z.id] ?? 0 }} 格</em>
+          <b
+            class="si-zone-edit"
+            title="重命名区域"
+            @click.stop="emit('rename-zone', z.id)"
+          >✎</b>
+          <b
+            class="si-zone-del"
+            title="删除区域"
+            @click.stop="emit('delete-zone', z.id)"
+          >×</b>
+        </button>
       </div>
       <UiButton variant="ghost" size="sm" icon="plus" @click="emit('add-zone')">新建区域</UiButton>
+      <p class="si-hint">点区域可在画布上高亮其全部格子；再点一次取消高亮。分配/解除区域可用 Ctrl+Z 撤销。</p>
     </section>
 
     <section class="si-block">
       <div class="si-title">样式</div>
       <div class="si-colors">
         <label class="si-color">
-          <span>填充</span>
-          <input type="color" :value="anchorCell?.style?.fill ?? '#ffffff'" @change="setFill" />
+          <span>底色</span>
+          <input
+            type="color"
+            :value="anchorCell?.style?.fill ?? '#ffffff'"
+            @input="previewFill"
+            @change="setFill"
+          />
         </label>
+        <button type="button" class="si-clear" @click="clearFill">清除底色</button>
+      </div>
+      <div class="si-colors">
         <label class="si-color">
           <span>文字</span>
-          <input type="color" :value="anchorCell?.style?.textColor ?? '#26333a'" @change="setTextColor" />
+          <input
+            type="color"
+            :value="anchorCell?.style?.textColor ?? '#26333a'"
+            @input="previewTextColor"
+            @change="setTextColor"
+          />
         </label>
       </div>
     </section>
@@ -192,14 +264,39 @@ function onZone(v: string): void {
 .si-field input:focus { border-color: var(--primary); }
 .si-field-row { flex-direction: row; align-items: center; justify-content: space-between; }
 .si-zones { display: flex; flex-direction: column; gap: 3px; }
-.si-zone { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
-.si-zone i { width: 9px; height: 9px; border-radius: 2px; }
-.si-zone span { flex: 1; }
-.si-zone-del { border: none; background: none; color: var(--text-disabled); cursor: pointer; font-size: 13px; }
+.si-zone {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 4px 6px; border: none; border-radius: 4px; background: none;
+  font-family: inherit; font-size: 11px; color: var(--text-secondary);
+  text-align: left; cursor: pointer;
+}
+.si-zone:hover { background: var(--bg-hover); }
+.si-zone.is-on { background: var(--primary-soft); color: var(--primary); }
+.si-zone i { width: 9px; height: 9px; flex: none; border-radius: 2px; }
+.si-zone span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.si-zone em { flex: none; font-style: normal; font-size: 10px; color: var(--text-disabled); font-variant-numeric: tabular-nums; }
+.si-zone-edit {
+  flex: none; border: none; background: none; color: var(--text-disabled);
+  cursor: pointer; font-size: 11px; font-weight: 400; padding: 0 1px;
+}
+.si-zone-edit:hover { color: var(--primary); }
+.si-zone-del { flex: none; border: none; background: none; color: var(--text-disabled); cursor: pointer; font-size: 13px; font-weight: 400; padding: 0 2px; }
 .si-zone-del:hover { color: var(--danger); }
-.si-colors { display: flex; gap: 10px; }
+.si-hint { margin: 2px 0 0; font-size: 10.5px; line-height: 1.5; color: var(--text-disabled); }
+
+.si-colors { display: flex; gap: 10px; align-items: center; }
 .si-color { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
+.si-color-grow { flex: 1; min-width: 0; }
+.si-color-grow :deep(.ui-select) { flex: 1; min-width: 0; }
+.si-inline-label { flex: none; font-size: 11px; color: var(--text-muted); }
+.si-select-grow { flex: 1; min-width: 0; }
 .si-color input { width: 24px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: none; }
+.si-clear {
+  height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text-muted);
+  font-family: inherit; font-size: 10.5px; cursor: pointer;
+}
+.si-clear:hover { color: var(--primary); border-color: var(--primary-line); }
 .si-stats { gap: 4px; }
 .si-stat { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
 .si-stat b { color: var(--text-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }

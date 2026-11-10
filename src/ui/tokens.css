@@ -18,6 +18,8 @@
   --bg: #ffffff;
   --bg-panel: #ffffff;
   --bg-subtle: #fafbfc;
+  /* 工作台分区底色：比白底略深，用来替代生硬的分隔竖线 */
+  --bg-sunken: #f5f7f7;
   --bg-hover: #f3f4f6;
   --bg-active: #e8eaee;
 

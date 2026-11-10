@@ -164,26 +164,48 @@ export function anchorOf(s: Sheet, row: number, col: number): { row: number; col
   return m ? { row: m.row, col: m.col } : { row, col }
 }
 
-export function colLabel(col: number): string {
-  let n = col + 1
-  let out = ''
-  while (n > 0) {
-    const rem = (n - 1) % 26
-    out = String.fromCharCode(65 + rem) + out
-    n = Math.floor((n - 1) / 26)
-  }
-  return out
+/** 单格容量上限：够放下主席台长条桌，同时避免误输入把画布撑爆 */
+export const MAX_SEATS_PER_CELL = 50
+
+/** 归一化单格座位数：任意正整数，默认 1 */
+export function clampSeats(v: unknown): number {
+  const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : 1
+  return Math.min(MAX_SEATS_PER_CELL, Math.max(1, n))
 }
 
-/** 补齐/裁剪座位 id，保证长度与 single/double 一致 */
+/** 补齐/裁剪座位 id，保证长度与容量一致 */
 export function ensureSeatIds(cell: SheetCell): void {
   if (cell.kind !== 'seat' && cell.kind !== 'podium') return
-  const n = cell.seats === 2 ? 2 : 1
+  const n = clampSeats(cell.seats ?? 1)
   const ids = cell.seatIds ? [...cell.seatIds] : []
   while (ids.length < n) ids.push(uid('seat'))
   ids.length = n
   cell.seatIds = ids
   if (!cell.seats) cell.seats = 1
+}
+
+/**
+ * 应用排座项目的桌容量覆盖，返回新的 Sheet（不改动共享布局原件）。
+ * 已有座位 id 原样保留；新增槽位用稳定的派生 id，保证多次渲染与保存一致。
+ */
+export function applySeatCapacity(s: Sheet, caps?: Record<string, number>): Sheet {
+  const entries = Object.entries(caps ?? {})
+  if (!entries.length) return s
+  const cells = { ...s.cells }
+  let changed = false
+  for (const [key, raw] of entries) {
+    const cell = s.cells[key]
+    if (!cell || (cell.kind !== 'seat' && cell.kind !== 'podium')) continue
+    const n = clampSeats(raw)
+    const baseIds = cell.seatIds ?? []
+    const [row, col] = key.split(':').map(Number)
+    const ids: string[] = []
+    for (let i = 0; i < n; i++) ids.push(baseIds[i] ?? `seat-${row}-${col}-${i + 1}`)
+    if ((cell.seats ?? 1) === n && ids.length === baseIds.length) continue
+    cells[key] = { ...cell, seats: n, seatIds: ids }
+    changed = true
+  }
+  return changed ? { ...s, cells } : s
 }
 
 export function normalizeSheet(input: Sheet): Sheet {
@@ -219,7 +241,7 @@ export function normalizeSheet(input: Sheet): Sheet {
     if (merges.some((m) => r >= m.row && r < m.row + m.rowSpan && c >= m.col && c < m.col + m.colSpan && !(m.row === r && m.col === c))) continue
     const next: SheetCell = { ...cell }
     if (next.kind === 'seat' || next.kind === 'podium') {
-      next.seats = next.seats === 2 ? 2 : 1
+      next.seats = clampSeats(next.seats ?? 1)
       ensureSeatIds(next)
     } else {
       next.kind = 'block'
@@ -388,9 +410,9 @@ export function seatsInRow(s: Sheet, row: number): SeatRef[] {
     if (!cell || (cell.kind !== 'seat' && cell.kind !== 'podium')) continue
     const span = mergeAt(s, row, col)
     const rect = cellRect(s, row, col, span?.rowSpan ?? 1, span?.colSpan ?? 1)
-    const n = cell.seats === 2 ? 2 : 1
-    const gap = Math.min(8, Math.max(4, rect.w * 0.04))
-    const w = (rect.w - gap * (n + 1)) / n
+    const n = clampSeats(cell.seats ?? 1)
+    // 座位槽严格等分所在格/合并块：不留内边距、不额外加缝，姓名直接铺满可用空间
+    const w = rect.w / n
     const ids = cell.seatIds ?? []
     for (let i = 0; i < n; i++) {
       if (!cell.disabled) no++
@@ -400,10 +422,10 @@ export function seatsInRow(s: Sheet, row: number): SeatRef[] {
         col,
         index: i + 1,
         seatNo: cell.disabled ? 0 : no,
-        x: rect.x + gap + i * (w + gap),
-        y: rect.y + gap,
+        x: rect.x + i * w,
+        y: rect.y,
         w,
-        h: rect.h - gap * 2,
+        h: rect.h,
         stage: cell.kind === 'podium',
         zoneId: cell.zoneId,
         disabled: !!cell.disabled,
@@ -421,11 +443,116 @@ export function seatsOfSheet(s: Sheet): SeatRef[] {
   return out
 }
 
+export interface BorderLine {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  width: number
+  dash?: 'dashed' | 'dotted'
+}
+
+/**
+ * 收集整张表需要绘制的边框线：相邻格共享的边只保留一条，
+ * 显式边框覆盖同位置的默认边框。界面与导出共用，保证两边表现一致。
+ */
+export function collectBorderLines(s: Sheet): BorderLine[] {
+  interface EdgeStyle {
+    color: string
+    width: number
+    dash?: 'dashed' | 'dotted'
+    priority: number
+  }
+  interface Edge {
+    a: number
+    b: number
+    style: EdgeStyle
+  }
+  const hLines = new Map<number, Edge[]>()
+  const vLines = new Map<number, Edge[]>()
+
+  const add = (map: Map<number, Edge[]>, pos: number, from: number, to: number, style: EdgeStyle): void => {
+    const a = Math.min(from, to)
+    const b = Math.max(from, to)
+    if (b - a < 0.01) return
+    const key = Math.round(pos * 100) / 100
+    const list = map.get(key)
+    if (list) list.push({ a, b, style })
+    else map.set(key, [{ a, b, style }])
+  }
+
+  const FALLBACK: EdgeStyle = { color: '#333333', width: 1, priority: 1 }
+
+  // 1) 默认边框：每个座位槽的四条边；禁用座位不画
+  for (let row = 0; row < s.rows; row++) {
+    for (const seat of seatsInRow(s, row)) {
+      if (seat.disabled) continue
+      const cell = cellAt(s, seat.row, seat.col)
+      // 用户显式设置过边框（含清空）的格子不再叠默认边框
+      if (cell?.style?.borders !== undefined) continue
+      add(hLines, seat.y, seat.x, seat.x + seat.w, FALLBACK)
+      add(hLines, seat.y + seat.h, seat.x, seat.x + seat.w, FALLBACK)
+      add(vLines, seat.x, seat.y, seat.y + seat.h, FALLBACK)
+      add(vLines, seat.x + seat.w, seat.y, seat.y + seat.h, FALLBACK)
+    }
+  }
+
+  // 2) 显式边框：只画用户选中的边，优先于默认边框
+  for (const [key, cell] of Object.entries(s.cells)) {
+    const sides = cell.style?.borders
+    if (!sides?.length) continue
+    const [row, col] = key.split(':').map(Number)
+    const m = mergeAt(s, row, col)
+    const r = cellRect(s, row, col, m?.rowSpan ?? 1, m?.colSpan ?? 1)
+    const strokeStyle = cell.style?.strokeStyle
+    const style: EdgeStyle = {
+      color: cell.style?.stroke ?? '#333333',
+      width: Math.max(1, cell.style?.strokeWidth ?? 1),
+      dash: strokeStyle === 'dashed' || strokeStyle === 'dotted' ? strokeStyle : undefined,
+      priority: 2
+    }
+    if (sides.includes('top')) add(hLines, r.y, r.x, r.x + r.w, style)
+    if (sides.includes('bottom')) add(hLines, r.y + r.h, r.x, r.x + r.w, style)
+    if (sides.includes('left')) add(vLines, r.x, r.y, r.y + r.h, style)
+    if (sides.includes('right')) add(vLines, r.x + r.w, r.y, r.y + r.h, style)
+  }
+
+  // 3) 同一直线上的边按区间切分：每段只输出一条（优先级高者胜），避免重叠描边
+  const out: BorderLine[] = []
+  const resolve = (map: Map<number, Edge[]>, vertical: boolean): void => {
+    for (const [pos, edges] of map) {
+      const points = Array.from(new Set(edges.flatMap((e) => [e.a, e.b]))).sort((a, b) => a - b)
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i]
+        const b = points[i + 1]
+        const mid = (a + b) / 2
+        let best: EdgeStyle | undefined
+        for (const e of edges) {
+          if (e.a > mid || e.b < mid) continue
+          if (!best || e.style.priority > best.priority || (e.style.priority === best.priority && e.style.width > best.width)) {
+            best = e.style
+          }
+        }
+        if (!best) continue
+        out.push(
+          vertical
+            ? { x1: pos, y1: a, x2: pos, y2: b, color: best.color, width: best.width, dash: best.dash }
+            : { x1: a, y1: pos, x2: b, y2: pos, color: best.color, width: best.width, dash: best.dash }
+        )
+      }
+    }
+  }
+  resolve(hLines, false)
+  resolve(vLines, true)
+  return out
+}
+
 /** 只在选中范围内填充座位（批量建桌） */
 export function fillSeats(
   s: Sheet,
   range: CellRange,
-  opts: { kind: 'seat' | 'podium'; seats: 1 | 2; tablePerRow: boolean; tableLabel?: string; zoneId?: string }
+  opts: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel?: string; zoneId?: string }
 ): number {
   let count = 0
   const r = normalizeRange(range)
@@ -436,7 +563,7 @@ export function fillSeats(
       if (opts.tablePerRow && !tableId) tableId = uid('table')
       const cell: SheetCell = {
         kind: opts.kind,
-        seats: opts.seats,
+        seats: clampSeats(opts.seats),
         tableId: opts.tablePerRow ? tableId : uid('table'),
         zoneId: opts.zoneId
       }

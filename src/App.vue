@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { loadAll, state } from './store'
+import { loadAll } from './store'
 import { UiIcon } from './ui'
 import RosterView from './views/RosterView.vue'
 import RankView from './views/RankView.vue'
 import UnitView from './views/UnitView.vue'
 import LayoutView from './views/LayoutView.vue'
 import ProjectView from './views/ProjectView.vue'
+import SettingsView from './views/SettingsView.vue'
 
-type Tab = 'roster' | 'rank' | 'unit' | 'layout' | 'project'
+type Tab = 'roster' | 'rank' | 'unit' | 'layout' | 'project' | 'settings'
 const tab = ref<Tab>('roster')
 const ready = ref(false)
 const activeRosterId = ref('')
@@ -59,20 +60,13 @@ function openSequence(t: 'rank' | 'unit', rosterId: string): void {
         </button>
       </nav>
 
-      <div class="side-foot">
-        <template v-if="state.storage === 'indexeddb'">
-          数据保存在本机浏览器 IndexedDB<br />
-          可在「排座项目」导出全量备份
-        </template>
-        <template v-else-if="state.storage === 'local'">
-          数据保存在本机浏览器 localStorage<br />
-          file:// 打开时自动启用，可长期保留
-        </template>
-        <template v-else>
-          当前浏览器禁止本地存储<br />
-          数据仅本次有效，请及时导出备份
-        </template>
-      </div>
+      <nav class="nav-group nav-group-foot">
+        <div class="nav-label">系统</div>
+        <button class="nav-item" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
+          <UiIcon class="ico" name="settings" :size="16" />
+          <span>设置中心</span>
+        </button>
+      </nav>
     </aside>
 
     <main class="main" :class="{ fill: tab === 'layout' || tab === 'project' }">
@@ -86,7 +80,8 @@ function openSequence(t: 'rank' | 'unit', rosterId: string): void {
         <RankView v-else-if="tab === 'rank'" :initial-roster-id="activeRosterId" @back="go('roster')" />
         <UnitView v-else-if="tab === 'unit'" :initial-roster-id="activeRosterId" @back="go('roster')" />
         <LayoutView v-else-if="tab === 'layout'" />
-        <ProjectView v-else />
+        <ProjectView v-else-if="tab === 'project'" />
+        <SettingsView v-else />
       </template>
     </main>
   </div>

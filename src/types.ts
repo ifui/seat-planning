@@ -16,15 +16,20 @@ export interface UnitNode {
   code?: string
 }
 
+/** 人员在位状态：请假者不参与排座，在排座页单独列出 */
+export type MemberStatus = 'present' | 'leave'
+
 export interface Member {
   id: string
   name: string
   unitId: string
   rankId: string
+  /** 职务（如主任、处长）：仅用于展示与筛选，不参与排序 */
+  duty?: string
   aliases: string[]
   gender?: 'M' | 'F'
   note?: string
-  active: boolean
+  status: MemberStatus
 }
 
 export interface RosterPlan {
@@ -45,9 +50,15 @@ export type CellKind = 'seat' | 'podium' | 'block'
 /** 特殊块的用途，仅 kind === 'block' 时有效 */
 export type BlockRole = 'aisle' | 'lectern' | 'backdrop' | 'label'
 
+export type BorderSide = 'top' | 'right' | 'bottom' | 'left'
+
 export interface CellStyle {
   fill?: string
   stroke?: string
+  strokeStyle?: 'solid' | 'dashed' | 'dotted' | 'none'
+  strokeWidth?: number
+  /** 显式边框：只画列出的边，线型/粗细/颜色取 strokeStyle / strokeWidth / stroke */
+  borders?: BorderSide[]
   radius?: number
   textColor?: string
   fontSize?: number
@@ -61,8 +72,8 @@ export interface CellStyle {
  */
 export interface SheetCell {
   kind: CellKind
-  /** kind === 'seat' | 'podium' 时：单人位 1 / 双人位 2 */
-  seats?: 1 | 2
+  /** kind === 'seat' | 'podium' 时：单人位 1 / 双人位 2 / 自定义任意正整数 */
+  seats?: number
   /** 每个座位一个稳定 id，长度 = seats；排座分配按它引用，插删行列不会错位 */
   seatIds?: string[]
   /** 固定空位（保留但不能坐人） */
@@ -136,9 +147,22 @@ export interface LayoutPackage {
   updatedAt: string
 }
 
+/** 布局预设：保存一份可复用的布局快照，从预设新建时复制并重生成座位 id */
+export interface LayoutPreset {
+  id: string
+  name: string
+  note?: string
+  /** 内置模板不可删除 */
+  builtin?: boolean
+  layout: LayoutPackage
+  createdAt: string
+  updatedAt: string
+}
+
 // ---------- 规则与项目 ----------
 
-export type AttendStatus = 'present' | 'leave' | 'absent' | 'guest'
+/** 与会状态：只保留「在位 / 请假」 */
+export type AttendStatus = 'present' | 'leave'
 
 export interface TierRule {
   id: string
@@ -151,20 +175,34 @@ export interface TierRule {
 }
 
 export interface RuleSet {
-  /** 主席台奇偶处理：偶数时 1 号居中偏左（就座者视角） */
+  /** 偶数座时 1 号取左中位还是右中位；2 号始终紧邻 1 号，3 号在另一侧 */
   evenCenterSide: 'left' | 'right'
-  /** 主席台人员请假时：留空位 / 后续前移补位 */
-  podiumLeave: 'hold' | 'shift'
   /** 台下横向填充方向 */
   hallOrder: 'center-out' | 'left-to-right' | 'right-to-left'
-  /** 视角：观众视角（默认）从左往右；主席台视角左右镜像，读数时换算 */
-  viewpoint: 'audience' | 'podium'
   /** 单位在座位上的分布：连续 / 交替穿插 */
   unitOrder: 'continuous' | 'interleave'
   /** 每排/区域职级分层 */
   tiers: TierRule[]
+  /** 区域人员分配规则：按级别快捷指派 + 手动勾选人员 */
+  zoneRules: ZoneRule[]
   /** 同一职级内是否按名单顺序 */
   keepListOrder: boolean
+}
+
+/**
+ * 区域分配规则。优先级：手动勾选人员 > 区域级别规则 > 职级分层规则。
+ * 一个区域可以有多条规则，职级取并集、排除取并集。
+ */
+export interface ZoneRule {
+  id: string
+  zoneId: string
+  /** 指派到该区域的职级 */
+  rankIds: string[]
+  /** 从该区域排除的职级（优先级高于 rankIds） */
+  excludeRankIds: string[]
+  /** 手动指定的人员，优先级最高 */
+  memberIds: string[]
+  enabled: boolean
 }
 
 export interface Assignment {
@@ -180,7 +218,25 @@ export interface Project {
   name: string
   rosterPlanId: string
   layoutPackageId: string
+  /**
+   * 冻结的名册快照：项目创建时复制。
+   * 之后名册的增删改不会自动影响本项目，需要时在项目里「手动更新」。
+   */
+  rosterSnapshot?: RosterPlan
   ruleSet: RuleSet
+  /** 排座图是否显示座位序号；缺省视为显示（兼容旧数据） */
+  showSeatNumbers?: boolean
+  /** 座位下方是否显示职级；缺省显示 */
+  showRank?: boolean
+  /** 座位下方是否显示职务；缺省隐藏 */
+  showDuty?: boolean
+  /** 座位下方是否显示单位；缺省隐藏 */
+  showUnit?: boolean
+  /**
+   * 本项目的桌容量覆盖：cellKey（"行:列"）→ 该桌坐几人。
+   * 缺省沿用布局里的旧 seats 字段；布局页不再提供容量设置。
+   */
+  seatCapacity?: Record<string, number>
   assignments: Assignment[]
   participantIds: string[]
   unassigned: string[]
@@ -200,10 +256,9 @@ export interface Snapshot {
 
 export const DEFAULT_RULESET: RuleSet = {
   evenCenterSide: 'left',
-  podiumLeave: 'hold',
   hallOrder: 'center-out',
-  viewpoint: 'audience',
   unitOrder: 'continuous',
   tiers: [],
+  zoneRules: [],
   keepListOrder: true
 }

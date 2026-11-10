@@ -3,15 +3,15 @@
  * 会场布局：Excel 式工作表工作台。
  * 数据模型：行列 → 单元格（座位 / 主席台 / 特殊块），排号与座号由格子决定。
  */
-import { computed, onMounted, ref } from 'vue'
-import type { CellStyle, LayoutPackage, SheetCell, ZoneDef } from '../types'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { BorderSide, CellStyle, LayoutPackage, SheetCell, ZoneDef } from '../types'
 import type { CellRange } from '../engine/sheet'
 import {
   addMerge,
   blockRoleLabel,
   cellAt,
+  clampSeats,
   cloneCell,
-  colLabel,
   createBlankLayout,
   eachCell,
   fillSeats,
@@ -20,8 +20,10 @@ import {
   isCovered,
   mergeAt,
   normalizeSheet,
+  nowISO,
   removeMerge,
-  setCell
+  setCell,
+  uid
 } from '../engine/sheet'
 import { deleteRows, deleteCols } from '../engine/sheet'
 import { loadAll, removeLayout, saveLayout, state } from '../store'
@@ -34,6 +36,9 @@ import SheetSetupDialog from '../components/sheet/SheetSetupDialog.vue'
 import UiContextMenu from '../ui/components/UiContextMenu.vue'
 import UiMenuItem from '../ui/components/UiMenuItem.vue'
 import UiButton from '../ui/components/UiButton.vue'
+import UiDropdown from '../ui/components/UiDropdown.vue'
+import UiIconButton from '../ui/components/UiIconButton.vue'
+import UiModal from '../ui/components/UiModal.vue'
 
 const current = ref<LayoutPackage | null>(null)
 const selection = ref<CellRange>({ r1: 0, c1: 0, r2: 0, c2: 0 })
@@ -58,10 +63,45 @@ function toast(msg: string): void {
 
 function commit(): void {
   historyPush()
+  markDirty()
+}
+
+// ---- 自动保存：停止编辑 900ms 后落盘，切换/关闭前兜底 ----
+let autosaveTimer = 0
+let autosaveSeq = 0
+
+function scheduleAutosave(): void {
+  autosaveSeq++
+  const seq = autosaveSeq
+  window.clearTimeout(autosaveTimer)
+  autosaveTimer = window.setTimeout(async () => {
+    if (seq !== autosaveSeq || !dirty.value || !current.value) return
+    await saveLayout(current.value)
+    if (seq === autosaveSeq) dirty.value = false
+  }, 900)
+}
+
+function markDirty(): void {
   dirty.value = true
+  scheduleAutosave()
+}
+
+async function flushAutosave(): Promise<void> {
+  autosaveSeq++
+  window.clearTimeout(autosaveTimer)
+  if (!dirty.value || !current.value) return
+  await saveLayout(current.value)
+  dirty.value = false
+}
+
+function onBeforeUnload(e: BeforeUnloadEvent): void {
+  if (!dirty.value) return
+  e.preventDefault()
+  e.returnValue = ''
 }
 
 async function selectLayout(id: string): Promise<void> {
+  if (dirty.value && current.value && current.value.id !== id) await flushAutosave()
   const found = state.layouts.find((l) => l.id === id)
   if (!found) return
   const next = JSON.parse(JSON.stringify(found)) as LayoutPackage
@@ -74,9 +114,18 @@ async function selectLayout(id: string): Promise<void> {
 }
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', onBeforeUnload)
+  window.addEventListener('keydown', onGlobalKey)
   if (!state.ready) await loadAll()
   if (state.layouts.length) await selectLayout(state.layouts[0].id)
   else await createLayout()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  window.removeEventListener('keydown', onGlobalKey)
+  window.clearTimeout(autosaveTimer)
+  void flushAutosave()
 })
 
 async function createLayout(): Promise<void> {
@@ -86,23 +135,20 @@ async function createLayout(): Promise<void> {
   toast('已新建空白表格')
 }
 
-async function removeCurrent(): Promise<void> {
-  if (!current.value) return
-  if (!window.confirm(`删除布局「${current.value.name}」？此操作不可撤销。`)) return
-  await removeLayout(current.value.id)
-  if (state.layouts.length) await selectLayout(state.layouts[0].id)
-  else await createLayout()
-}
-
 async function reloadCurrent(): Promise<void> {
   if (!current.value) return
   if (dirty.value && !window.confirm('放弃未保存的修改，重新载入？')) return
+  autosaveSeq++
+  window.clearTimeout(autosaveTimer)
+  dirty.value = false
   await selectLayout(current.value.id)
   toast('已重新载入')
 }
 
 async function save(): Promise<void> {
   if (!current.value) return
+  autosaveSeq++
+  window.clearTimeout(autosaveTimer)
   await saveLayout(current.value)
   dirty.value = false
   toast('已保存到本地')
@@ -118,6 +164,73 @@ function exportJson(): void {
   URL.revokeObjectURL(a.href)
 }
 
+// ---------- 布局切换与编辑 ----------
+
+const renameOpen = ref(false)
+const renameName = ref('')
+const deleteOpen = ref(false)
+const gridRef = ref<InstanceType<typeof SheetGrid> | null>(null)
+
+function openRename(): void {
+  if (!current.value) return
+  renameName.value = current.value.name
+  renameOpen.value = true
+}
+
+async function confirmRename(): Promise<void> {
+  if (!current.value) return
+  const name = renameName.value.trim()
+  if (!name) {
+    toast('请填写布局名称')
+    return
+  }
+  current.value.name = name
+  current.value.updatedAt = nowISO()
+  await saveLayout(current.value)
+  renameOpen.value = false
+  dirty.value = false
+  toast('已重命名')
+}
+
+async function duplicateLayout(): Promise<void> {
+  if (!current.value) return
+  await flushAutosave()
+  const copy = JSON.parse(JSON.stringify(current.value)) as LayoutPackage
+  copy.id = uid('layout')
+  copy.name = `${current.value.name} 副本`
+  copy.createdAt = nowISO()
+  copy.updatedAt = nowISO()
+  copy.sheet = normalizeSheet(copy.sheet)
+  await saveLayout(copy)
+  await selectLayout(copy.id)
+  toast('已复制为新布局')
+}
+
+function openDelete(): void {
+  if (!current.value) return
+  deleteOpen.value = true
+}
+
+async function confirmDelete(): Promise<void> {
+  if (!current.value) return
+  deleteOpen.value = false
+  autosaveSeq++
+  window.clearTimeout(autosaveTimer)
+  dirty.value = false
+  await removeLayout(current.value.id)
+  if (state.layouts.length) await selectLayout(state.layouts[0].id)
+  else await createLayout()
+  toast('已删除当前布局')
+}
+
+/** Ctrl/⌘ + 滚轮只缩放画布；面板、工具栏等固定界面不参与缩放 */
+function onRootWheel(e: WheelEvent): void {
+  if (!e.ctrlKey && !e.metaKey) return
+  if ((e.target as HTMLElement | null)?.closest('.sg-scroll')) return
+  e.preventDefault()
+  gridRef.value?.zoomBy(e.deltaY > 0 ? -1 : 1)
+}
+
 const fileInput = ref<HTMLInputElement | null>(null)
 
 function onImportClick(): void {
@@ -128,15 +241,36 @@ async function onImportFile(e: Event): Promise<void> {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
   try {
-    const parsed = JSON.parse(await file.text()) as LayoutPackage
-    if (parsed.schemaVersion !== '2.0' || !parsed.sheet) {
-      toast('只支持 2.0 表格布局文件')
+    const parsed = JSON.parse(await file.text())
+    if (Array.isArray(parsed?.layouts)) {
+      const items = parsed.layouts.filter((l: LayoutPackage) => l && l.sheet && l.schemaVersion === '2.0')
+      if (!items.length) {
+        toast('布局包中没有可导入的布局')
+        return
+      }
+      let last: LayoutPackage | null = null
+      for (const item of items) {
+        const layout = JSON.parse(JSON.stringify(item)) as LayoutPackage
+        layout.id = uid('layout')
+        layout.name = `${layout.name || '导入的布局'}`
+        layout.createdAt = nowISO()
+        layout.updatedAt = nowISO()
+        await saveLayout(layout)
+        last = layout
+      }
+      if (last) await selectLayout(last.id)
+      toast(`已导入 ${items.length} 个布局`)
       return
     }
-    parsed.id = `layout-${Date.now().toString(36)}`
-    parsed.name = `${parsed.name || '导入的布局'}`
-    await saveLayout(parsed)
-    await selectLayout(parsed.id)
+    const single = parsed as LayoutPackage
+    if (single.schemaVersion !== '2.0' || !single.sheet) {
+      toast('只支持 2.0 表格布局文件或布局包')
+      return
+    }
+    single.id = uid('layout')
+    single.name = `${single.name || '导入的布局'}`
+    await saveLayout(single)
+    await selectLayout(single.id)
     toast('导入成功')
   } catch {
     toast('文件解析失败')
@@ -147,18 +281,46 @@ async function onImportFile(e: Event): Promise<void> {
 
 // ---------- 选区信息 ----------
 
-const range = computed<CellRange>(() => ({
-  r1: Math.min(selection.value.r1, selection.value.r2),
-  c1: Math.min(selection.value.c1, selection.value.c2),
-  r2: Math.max(selection.value.r1, selection.value.r2),
-  c2: Math.max(selection.value.c1, selection.value.c2)
-}))
+/** 选区若碰到合并区，自动扩展到合并区完整边界，保证复制/样式/操作与所见一致 */
+function expandRangeToMerges(s: { merges: { row: number; col: number; rowSpan: number; colSpan: number }[] }, input: CellRange): CellRange {
+  let { r1, c1, r2, c2 } = input
+  for (let guard = 0; guard < 8; guard++) {
+    let changed = false
+    for (const m of s.merges) {
+      const hit = m.row <= r2 && m.row + m.rowSpan - 1 >= r1 && m.col <= c2 && m.col + m.colSpan - 1 >= c1
+      if (!hit) continue
+      const nr1 = Math.min(r1, m.row)
+      const nc1 = Math.min(c1, m.col)
+      const nr2 = Math.max(r2, m.row + m.rowSpan - 1)
+      const nc2 = Math.max(c2, m.col + m.colSpan - 1)
+      if (nr1 !== r1 || nc1 !== c1 || nr2 !== r2 || nc2 !== c2) {
+        r1 = nr1
+        c1 = nc1
+        r2 = nr2
+        c2 = nc2
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+  return { r1, c1, r2, c2 }
+}
+
+const range = computed<CellRange>(() => {
+  const base = {
+    r1: Math.min(selection.value.r1, selection.value.r2),
+    c1: Math.min(selection.value.c1, selection.value.c2),
+    r2: Math.max(selection.value.r1, selection.value.r2),
+    c2: Math.max(selection.value.c1, selection.value.c2)
+  }
+  return current.value ? expandRangeToMerges(current.value.sheet, base) : base
+})
 
 const selectionLabel = computed(() => {
   const r = range.value
-  const a = `${colLabel(r.c1)}${r.r1 + 1}`
-  const b = `${colLabel(r.c2)}${r.r2 + 1}`
-  return a === b ? a : `${a}:${b}`
+  const a = `${r.c1 + 1} 列 ${r.r1 + 1} 行`
+  const b = `${r.c2 + 1} 列 ${r.r2 + 1} 行`
+  return a === b ? a : `${a} – ${b}`
 })
 
 const cellCount = computed(() => (range.value.r2 - range.value.r1 + 1) * (range.value.c2 - range.value.c1 + 1))
@@ -169,7 +331,102 @@ const activeCell = computed(() => {
   return cellAt(current.value.sheet, m ? m.row : active.value.row, m ? m.col : active.value.col)
 })
 
-const seatsValue = computed<1 | 2>(() => (activeCell.value?.seats === 2 ? 2 : 1))
+// ---------- 边框 ----------
+
+const borderStyle = ref<'solid' | 'dashed' | 'dotted'>('solid')
+const borderWidth = ref(1)
+const borderColor = ref('#333333')
+
+/**
+ * 快捷边框：一次点击把选区整体加上对应边；若选区内这些边都已存在，则再点一次取消。
+ * 只写数据层（style.borders），渲染与导出都按这份数据画线。
+ */
+function applyBorder(kind: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom' | 'none'): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  const r = range.value
+  const targets: { row: number; col: number; cell: SheetCell; sides: BorderSide[] }[] = []
+
+  eachCell(s, r, (row, col, cell) => {
+    if (!cell) return
+    const m = mergeAt(s, row, col)
+    if (m && (m.row !== row || m.col !== col)) return
+    const rowSpan = m?.rowSpan ?? 1
+    const colSpan = m?.colSpan ?? 1
+    let sides: BorderSide[]
+    if (kind === 'none' || kind === 'all') {
+      sides = ['top', 'right', 'bottom', 'left']
+    } else if (kind === 'outer') {
+      sides = []
+      if (row === r.r1) sides.push('top')
+      if (col === r.c1) sides.push('left')
+      if (row + rowSpan - 1 === r.r2) sides.push('bottom')
+      if (col + colSpan - 1 === r.c2) sides.push('right')
+    } else {
+      sides = [kind]
+    }
+    if (sides.length) targets.push({ row, col, cell, sides })
+  })
+  if (!targets.length) return
+
+  const has = (c: SheetCell, side: BorderSide): boolean => !!c.style?.borders?.includes(side)
+  const allSet = targets.every((t) => t.sides.every((side) => has(t.cell, side)))
+
+  for (const t of targets) {
+    const next = new Set<BorderSide>(t.cell.style?.borders ?? [])
+    for (const side of t.sides) {
+      if (allSet || kind === 'none') next.delete(side)
+      else next.add(side)
+    }
+    const borders = (['top', 'right', 'bottom', 'left'] as BorderSide[]).filter((side) => next.has(side))
+    setCell(s, t.row, t.col, {
+      ...t.cell,
+      style: {
+        ...(t.cell.style ?? {}),
+        strokeStyle: borderStyle.value,
+        strokeWidth: borderWidth.value,
+        stroke: borderColor.value,
+        // 空数组表示「显式清除」，与未设置（默认黑框）区分
+        borders
+      }
+    })
+  }
+  commit()
+}
+
+/** 线型/粗细/线色立即作用于选区里已有边框的格子 */
+function patchBorderStyle(patch: Pick<CellStyle, 'strokeStyle' | 'strokeWidth' | 'stroke'>): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  let touched = false
+  eachCell(s, range.value, (row, col, cell) => {
+    if (!cell?.style?.borders?.length) return
+    setCell(s, row, col, { ...cell, style: { ...cell.style, ...patch } })
+    touched = true
+  })
+  if (touched) commit()
+}
+
+function setBorderStyle(v: 'solid' | 'dashed' | 'dotted'): void {
+  borderStyle.value = v
+  patchBorderStyle({ strokeStyle: v })
+}
+function setBorderWidth(v: number): void {
+  borderWidth.value = v
+  patchBorderStyle({ strokeWidth: v })
+}
+function setBorderColor(v: string): void {
+  borderColor.value = v
+  patchBorderStyle({ stroke: v })
+}
+
+// 切换选区时让下拉回显当前格子的边框样式
+watch(activeCell, (c) => {
+  const st = c?.style
+  borderStyle.value = st?.strokeStyle === 'dashed' || st?.strokeStyle === 'dotted' ? st.strokeStyle : 'solid'
+  borderWidth.value = Math.max(1, Math.min(3, Math.round(st?.strokeWidth ?? 1)))
+  borderColor.value = st?.stroke ?? '#333333'
+})
 
 // ---------- 单元格操作 ----------
 
@@ -186,7 +443,7 @@ function setType(kind: 'seat' | 'podium' | 'block', role?: 'aisle' | 'lectern' |
       if (!base.text) base.text = blockRoleLabel(base.role)
     } else {
       base.kind = kind
-      base.seats = base.seats === 2 ? 2 : 1
+      base.seats = clampSeats(base.seats ?? 1)
       delete base.role
       delete base.text
       ensureIds(base)
@@ -197,23 +454,11 @@ function setType(kind: 'seat' | 'podium' | 'block', role?: 'aisle' | 'lectern' |
 }
 
 function ensureIds(cell: SheetCell): void {
-  const n = cell.seats === 2 ? 2 : 1
+  const n = clampSeats(cell.seats ?? 1)
   const ids = cell.seatIds ? [...cell.seatIds] : []
   while (ids.length < n) ids.push(`seat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`)
   ids.length = n
   cell.seatIds = ids
-}
-
-function setSeats(n: 1 | 2): void {
-  if (!current.value) return
-  const s = current.value.sheet
-  eachCell(s, range.value, (row, col, cell) => {
-    if (!cell || (cell.kind !== 'seat' && cell.kind !== 'podium')) return
-    const next: SheetCell = { ...cell, seats: n }
-    ensureIds(next)
-    setCell(s, row, col, next)
-  })
-  commit()
 }
 
 function patchCell(patch: Partial<SheetCell>): void {
@@ -221,18 +466,27 @@ function patchCell(patch: Partial<SheetCell>): void {
   const s = current.value.sheet
   eachCell(s, range.value, (row, col, cell) => {
     if (!cell) return
-    setCell(s, row, col, { ...cell, ...patch })
+    const next: SheetCell = { ...cell, ...patch }
+    setCell(s, row, col, next)
   })
   commit()
 }
 
-function patchStyle(patch: CellStyle): void {
+/**
+ * 样式修改：preview 用于取色器拖动中的实时预览，只刷新画布不写撤销历史；
+ * commit 在取色结束时落一次历史，整次调色只占一步。
+ */
+function patchStyle(patch: CellStyle, preview = false): void {
   if (!current.value) return
   const s = current.value.sheet
   eachCell(s, range.value, (row, col, cell) => {
     if (!cell) return
     setCell(s, row, col, { ...cell, style: { ...(cell.style ?? {}), ...patch } })
   })
+  if (preview) {
+    markDirty()
+    return
+  }
   commit()
 }
 
@@ -367,6 +621,12 @@ function pasteClipboard(): void {
   const s = current.value.sheet
   const baseRow = active.value.row
   const baseCol = active.value.col
+  const dstR2 = Math.min(s.rows - 1, baseRow + clip.h - 1)
+  const dstC2 = Math.min(s.cols - 1, baseCol + clip.w - 1)
+  // 先清掉目标区域内的旧合并，避免新旧合并重叠产生幽灵边框
+  s.merges = s.merges.filter(
+    (m) => !(m.row <= dstR2 && m.row + m.rowSpan - 1 >= baseRow && m.col <= dstC2 && m.col + m.colSpan - 1 >= baseCol)
+  )
   for (const item of clip.cells) {
     const row = baseRow + item.dr
     const col = baseCol + item.dc
@@ -384,8 +644,8 @@ function pasteClipboard(): void {
   selection.value = {
     r1: baseRow,
     c1: baseCol,
-    r2: Math.min(s.rows - 1, baseRow + clip.h - 1),
-    c2: Math.min(s.cols - 1, baseCol + clip.w - 1)
+    r2: dstR2,
+    c2: dstC2
   }
   commit()
 }
@@ -457,7 +717,7 @@ function onEdit(p: { row: number; col: number; text: string }): void {
   commit()
 }
 
-function onFill(payload: { kind: 'seat' | 'podium'; seats: 1 | 2; tablePerRow: boolean; tableLabel: string; zoneId: string }): void {
+function onFill(payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string; zoneId: string }): void {
   if (!current.value) return
   const n = fillSeats(current.value.sheet, range.value, payload)
   commit()
@@ -501,21 +761,111 @@ function addZone(): void {
     color: ZONE_COLORS[(n - 1) % ZONE_COLORS.length]
   }
   current.value.zones.push(zone)
-  dirty.value = true
+  markDirty()
+}
+
+// 区域重命名：引用全部走 id，改名后各处的名称自动同步
+const zoneRenameOpen = ref(false)
+const zoneRenameId = ref('')
+const zoneRenameName = ref('')
+
+function openZoneRename(id: string): void {
+  const z = current.value?.zones.find((v) => v.id === id)
+  if (!z) return
+  zoneRenameId.value = id
+  zoneRenameName.value = z.name
+  zoneRenameOpen.value = true
+}
+
+function confirmZoneRename(): void {
+  const name = zoneRenameName.value.trim()
+  if (!name) {
+    toast('请填写区域名称')
+    return
+  }
+  const z = current.value?.zones.find((v) => v.id === zoneRenameId.value)
+  if (!z) return
+  z.name = name
+  zoneRenameOpen.value = false
+  commit()
+  toast('区域已重命名')
 }
 
 function deleteZone(id: string): void {
   if (!current.value) return
   const s = current.value.sheet
   current.value.zones = current.value.zones.filter((z) => z.id !== id)
+  if (focusZoneId.value === id) focusZoneId.value = ''
   for (const [k, cell] of Object.entries(s.cells)) {
     if (cell.zoneId !== id) continue
     const next = { ...cell }
     delete next.zoneId
     s.cells[k] = next
   }
-  dirty.value = true
+  markDirty()
 }
+
+/** 区域管理 → 画布反向高亮；再点一次取消 */
+const focusZoneId = ref('')
+const zoneHighlight = computed(() => {
+  const z = current.value?.zones.find((v) => v.id === focusZoneId.value)
+  return z ? { id: z.id, color: z.color } : null
+})
+
+function toggleZoneFocus(id: string): void {
+  focusZoneId.value = focusZoneId.value === id ? '' : id
+}
+
+// ---------- 区域分配模式：选中目标区域后，在画布上点/拖即可连续分配 ----------
+const assignZoneId = ref('')
+const assignZoneName = computed(
+  () => current.value?.zones.find((z) => z.id === assignZoneId.value)?.name ?? ''
+)
+let assignTimer = 0
+
+function startZoneAssign(zoneId: string): void {
+  if (!current.value) return
+  if (!current.value.zones.some((z) => z.id === zoneId)) return
+  assignZoneId.value = zoneId
+  assignZone(zoneId)
+}
+
+function stopZoneAssign(): void {
+  assignZoneId.value = ''
+  window.clearTimeout(assignTimer)
+}
+
+function createZoneAndAssign(): void {
+  addZone()
+  const zones = current.value?.zones
+  const z = zones?.[zones.length - 1]
+  if (z) startZoneAssign(z.id)
+}
+
+watch(
+  selection,
+  () => {
+    if (!assignZoneId.value) return
+    window.clearTimeout(assignTimer)
+    assignTimer = window.setTimeout(() => {
+      if (assignZoneId.value) assignZone(assignZoneId.value)
+    }, 140)
+  },
+  { deep: true }
+)
+
+function onGlobalKey(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !assignZoneId.value) return
+  e.preventDefault()
+  stopZoneAssign()
+}
+
+watch(
+  () => current.value?.id,
+  () => {
+    focusZoneId.value = ''
+  }
+)
 
 // ---------- 右键菜单 ----------
 
@@ -543,11 +893,11 @@ function onCommand(cmd: string): void {
       return
     case 'undo':
       undo()
-      dirty.value = true
+      markDirty()
       return
     case 'redo':
       redo()
-      dirty.value = true
+      markDirty()
       return
     case 'fill-down':
       fillDown()
@@ -560,38 +910,58 @@ function onCommand(cmd: string): void {
 </script>
 
 <template>
-  <div class="layout-view">
-    <aside class="lv-rail">
-      <div class="lv-rail-head">
-        <span>布局</span>
-        <UiButton variant="ghost" size="sm" icon="plus" title="新建布局" @click="createLayout" />
+  <div class="layout-view" @wheel="onRootWheel">
+    <div class="lv-topbar">
+      <div class="lv-current">
+        <span class="lv-current-label">当前布局</span>
+        <span class="lv-current-name" :title="current?.name">{{ current?.name || '—' }}</span>
       </div>
-      <div class="lv-list">
-        <button
-          v-for="l in layouts"
-          :key="l.id"
-          class="lv-item"
-          :class="{ active: current?.id === l.id }"
-          @click="selectLayout(l.id)"
-        >
-          <span class="lv-item-name">{{ l.name }}</span>
-          <span class="lv-item-meta">{{ l.sheet.rows }}×{{ l.sheet.cols }}</span>
-        </button>
+      <div class="lv-top-actions">
+        <UiDropdown align="right" :width="260">
+          <template #trigger>
+            <UiButton variant="ghost" size="sm" icon="layers">切换</UiButton>
+          </template>
+          <template #default="{ close }">
+            <div class="lv-menu-title">切换布局</div>
+            <UiMenuItem
+              v-for="l in layouts"
+              :key="l.id"
+              :icon="current?.id === l.id ? 'check' : 'grid'"
+              :label="`${l.name} · ${l.sheet.rows}×${l.sheet.cols}`"
+              :checked="current?.id === l.id"
+              @click="close(); selectLayout(l.id)"
+            />
+            <div v-if="!layouts.length" class="lv-menu-empty">还没有布局</div>
+          </template>
+        </UiDropdown>
+        <UiButton variant="ghost" size="sm" icon="plus" @click="createLayout">新建</UiButton>
+        <UiDropdown align="right" :width="190">
+          <template #trigger>
+            <UiIconButton icon="settings" title="管理布局" />
+          </template>
+          <template #default="{ close }">
+            <UiMenuItem icon="edit" label="重命名" @click="close(); openRename()" />
+            <UiMenuItem icon="copy" label="复制为新布局" @click="close(); duplicateLayout()" />
+            <div class="ctx-sep" />
+            <UiMenuItem icon="trash" label="删除当前布局" danger @click="close(); openDelete()" />
+          </template>
+        </UiDropdown>
       </div>
-      <div class="lv-rail-foot">
-        <UiButton v-if="current" variant="ghost" size="sm" icon="trash" @click="removeCurrent">删除当前布局</UiButton>
-        <div class="lv-tip">排号由格子行列决定：<br />行 = 排，行内座位顺序 = 座号。</div>
-      </div>
-    </aside>
+    </div>
 
     <div v-if="current" class="lv-main">
       <SheetToolbar
-        :name="current.name"
         :can-undo="canUndo"
         :can-redo="canRedo"
         :selection-label="selectionLabel"
         :cell-count="cellCount"
-        :seats="seatsValue"
+        :border-style="borderStyle"
+        :border-width="borderWidth"
+        :border-color="borderColor"
+        @border="applyBorder"
+        @update:border-style="setBorderStyle"
+        @update:border-width="setBorderWidth"
+        @update:border-color="setBorderColor"
         @back="reloadCurrent"
         @setup="setupOpen = true"
         @save="save"
@@ -606,16 +976,17 @@ function onCommand(cmd: string): void {
         @merge="mergeSelection"
         @unmerge="unmergeSelection"
         @type="setType"
-        @seats="setSeats"
         @fill="fillOpen = true"
         @clear="clearSelection"
       />
 
       <div class="lv-work">
         <SheetGrid
+          ref="gridRef"
           :sheet="sheet"
           :selection="selection"
           :active="active"
+          :zone-highlight="zoneHighlight"
           @update:selection="selection = $event"
           @update:active="active = $event"
           @commit="commit"
@@ -628,12 +999,21 @@ function onCommand(cmd: string): void {
           :selection="selection"
           :active="active"
           :zones="current.zones"
+          :highlight-zone-id="focusZoneId"
           @patch="patchCell"
           @style="patchStyle"
+          @preview-style="(p) => patchStyle(p, true)"
           @select-zone="assignZone"
+          @focus-zone="toggleZoneFocus"
           @add-zone="addZone"
           @delete-zone="deleteZone"
+          @rename-zone="openZoneRename"
         />
+        <div v-if="assignZoneId" class="lv-assign-hint">
+          <span>正在分配区域：{{ assignZoneName }}</span>
+          <span class="lv-assign-esc">按 Esc 退出</span>
+          <button type="button" class="lv-assign-close" title="退出区域分配" @click="stopZoneAssign">×</button>
+        </div>
       </div>
     </div>
 
@@ -641,6 +1021,57 @@ function onCommand(cmd: string): void {
 
     <FillDialog v-model="fillOpen" :range-label="selectionLabel" :zones="current?.zones ?? []" @fill="onFill" />
     <SheetSetupDialog v-if="current" v-model="setupOpen" :sheet="sheet" @apply="applySetup" />
+
+    <UiModal
+      v-model="renameOpen"
+      title="重命名布局"
+      description="只修改名称，布局内容不受影响。"
+      width="420px"
+    >
+      <label class="lv-field">
+        <span>布局名称</span>
+        <input v-model="renameName" class="lv-input" maxlength="40" placeholder="例如：第一会议室布局" @keyup.enter="confirmRename" />
+      </label>
+      <template #footer>
+        <UiButton variant="ghost" size="sm" @click="renameOpen = false">取消</UiButton>
+        <UiButton variant="primary" size="sm" @click="confirmRename">保存</UiButton>
+      </template>
+    </UiModal>
+
+    <UiModal
+      v-model="deleteOpen"
+      title="删除当前布局"
+      description="删除后不可恢复，请确认。"
+      width="420px"
+    >
+      <p class="lv-confirm-text">确定删除布局「{{ current?.name }}」？</p>
+      <template #footer>
+        <UiButton variant="ghost" size="sm" @click="deleteOpen = false">取消</UiButton>
+        <UiButton variant="primary" size="sm" class="lv-danger-btn" @click="confirmDelete">删除</UiButton>
+      </template>
+    </UiModal>
+
+    <UiModal
+      v-model="zoneRenameOpen"
+      title="重命名区域"
+      description="改名后，区域规则、区域分配等处引用的名称会同步更新。"
+      width="420px"
+    >
+      <label class="lv-field">
+        <span>区域名称</span>
+        <input
+          v-model="zoneRenameName"
+          class="lv-input"
+          maxlength="20"
+          autofocus
+          @keydown.enter="confirmZoneRename"
+        />
+      </label>
+      <template #footer>
+        <UiButton variant="ghost" size="sm" @click="zoneRenameOpen = false">取消</UiButton>
+        <UiButton variant="primary" size="sm" @click="confirmZoneRename">保存</UiButton>
+      </template>
+    </UiModal>
 
     <UiContextMenu :open="ctx.open" :x="ctx.x" :y="ctx.y" @close="ctx.open = false">
       <UiMenuItem icon="copy" label="复制" shortcut="Ctrl+C" @click="ctxRun(copySelection)" />
@@ -661,12 +1092,23 @@ function onCommand(cmd: string): void {
       <UiMenuItem icon="lectern" label="设为讲台（不坐人）" @click="ctxRun(() => setType('block', 'lectern'))" />
       <UiMenuItem icon="rect" label="设为背景板（不坐人）" @click="ctxRun(() => setType('block', 'backdrop'))" />
       <UiMenuItem icon="label" label="设为标签（不坐人）" @click="ctxRun(() => setType('block', 'label'))" />
+      <div class="ctx-sep" />
+      <div class="ctx-label">区域分配</div>
+      <UiMenuItem
+        v-for="z in current?.zones ?? []"
+        :key="z.id"
+        icon="zone"
+        :label="z.name"
+        @click="ctxRun(() => startZoneAssign(z.id))"
+      />
+      <UiMenuItem icon="plus" label="新建区域并分配" @click="ctxRun(createZoneAndAssign)" />
+      <UiMenuItem v-if="assignZoneId" icon="close" label="退出区域分配" @click="ctxRun(stopZoneAssign)" />
     </UiContextMenu>
 
     <input ref="fileInput" type="file" accept="application/json,.json" class="lv-file" @change="onImportFile" />
 
     <Transition name="toast">
-      <div v-if="toastMsg" class="lv-toast">{{ toastMsg }}</div>
+      <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
     </Transition>
 
     <div v-if="dirty" class="lv-dirty">未保存</div>
@@ -674,41 +1116,59 @@ function onCommand(cmd: string): void {
 </template>
 
 <style scoped>
-.layout-view { display: flex; height: 100%; min-height: 0; gap: 10px; padding: 10px; }
-.lv-rail {
-  width: 196px; flex: none; display: flex; flex-direction: column;
-  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg);
-  overflow: hidden;
+.layout-view { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; padding: 10px; }
+.lv-topbar {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 5px 8px 5px 12px;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-md);
 }
-.lv-rail-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 10px; font-size: 11px; font-weight: 600; color: var(--text-muted);
-  border-bottom: 1px solid var(--border-soft);
+.lv-current { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lv-current-label { flex: none; font-size: 11px; color: var(--text-muted); }
+.lv-current-name {
+  font-size: 13px; font-weight: 500; color: var(--text-primary);
+  max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.lv-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.lv-item {
-  display: flex; flex-direction: column; gap: 2px; text-align: left;
-  padding: 7px 9px; border: 1px solid transparent; border-radius: 5px;
-  background: none; cursor: pointer; font-family: inherit;
-}
-.lv-item:hover { background: var(--bg-hover); }
-.lv-item.active { background: var(--primary-soft); border-color: var(--primary-line); }
-.lv-item-name { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lv-item-meta { font-size: 10px; color: var(--text-disabled); }
-.lv-rail-foot { padding: 8px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 6px; }
-.lv-tip { font-size: 10px; line-height: 1.6; color: var(--text-disabled); }
+.lv-top-actions { flex: none; display: flex; align-items: center; gap: 4px; }
+.lv-menu-title { padding: 6px 10px 4px; font-size: 10.5px; color: var(--text-disabled); }
+.lv-menu-empty { padding: 10px; text-align: center; font-size: 11.5px; color: var(--text-muted); }
 
-.lv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.lv-work { flex: 1; min-height: 0; display: flex; gap: 8px; }
+.lv-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.lv-work { position: relative; flex: 1; min-height: 0; display: flex; gap: 8px; }
 .lv-empty { flex: 1; display: grid; place-items: center; color: var(--text-muted); font-size: 12px; }
 
 .lv-file { display: none; }
 .ctx-sep { height: 1px; background: var(--border-soft); margin: 4px 8px; }
-.lv-toast {
-  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
-  background: var(--text-primary); color: #fff; font-size: 12px;
-  padding: 8px 16px; border-radius: 6px; z-index: 80; box-shadow: var(--shadow-md);
+.ctx-label { padding: 5px 10px 3px; font-size: 10.5px; color: var(--text-disabled); }
+
+/* 区域分配模式提示：左下角小字，弱化，不抢画布内容 */
+.lv-assign-hint {
+  position: absolute; left: 14px; bottom: 42px; z-index: 20;
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: calc(100% - 300px);
+  padding: 3px 5px 3px 9px; border: 1px solid var(--border-soft); border-radius: 5px;
+  background: var(--bg); color: var(--text-muted);
+  font-size: 10.5px; line-height: 1.5; letter-spacing: .01em;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+  pointer-events: none;
 }
+.lv-assign-esc { color: var(--text-disabled); }
+.lv-assign-close {
+  pointer-events: auto; flex: none; width: 16px; height: 16px; padding: 0;
+  border: none; border-radius: 3px; background: none; color: var(--text-disabled);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.lv-assign-close:hover { background: var(--bg-hover); color: var(--text-secondary); }
+
+.lv-field { display: flex; flex-direction: column; gap: 6px; }
+.lv-field > span { font-size: 11px; color: var(--text-muted); }
+.lv-input {
+  height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text-primary); font-family: inherit; font-size: 12px; outline: none;
+}
+.lv-input:focus { border-color: var(--primary-line); box-shadow: 0 0 0 2px var(--primary-soft); }
+.lv-confirm-text { margin: 0; font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
+.lv-danger-btn { background: var(--danger, #b4574e); border-color: var(--danger, #b4574e); color: #fff; }
 .lv-dirty {
   position: fixed; right: 18px; bottom: 18px; z-index: 60;
   font-size: 11px; color: var(--warning); background: var(--warning-soft);

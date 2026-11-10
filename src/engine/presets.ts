@@ -60,6 +60,7 @@ function buildTemplate(opts: {
     canvas: { width: w, height: h, background: '#FFFFFF' },
     sheet: { ...sheet, cells },
     zones,
+    elements: [],
     createdAt: now,
     updatedAt: now
   }
@@ -113,8 +114,13 @@ export function layoutFromPreset(preset: LayoutPreset, name?: string): LayoutPac
     schemaVersion: '2.0',
     id: uid('layout'),
     name: name || preset.name,
+    elements: JSON.parse(JSON.stringify(src.elements ?? [])) as LayoutPackage['elements'],
     createdAt: now,
     updatedAt: now
+  }
+  // 预设里的元素与座位一样重新生成 id，避免两个布局共用元素标识
+  for (const el of layout.elements) {
+    el.id = `el-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
   }
   for (const cell of Object.values(layout.sheet.cells)) {
     if (cell.kind !== 'seat' && cell.kind !== 'podium') continue

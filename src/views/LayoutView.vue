@@ -4,7 +4,7 @@
  * 数据模型：行列 → 单元格（座位 / 主席台 / 特殊块），排号与座号由格子决定。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { BorderSide, CellStyle, LayoutPackage, SheetCell, ZoneDef } from '../types'
+import type { BorderSide, CellStyle, ElementKind, LayoutElement, LayoutPackage, SheetCell, ZoneDef } from '../types'
 import type { CellRange } from '../engine/sheet'
 import {
   addMerge,
@@ -31,6 +31,18 @@ import { useLayoutHistory } from '../composables/useLayoutHistory'
 import SheetToolbar from '../components/sheet/SheetToolbar.vue'
 import SheetGrid from '../components/sheet/SheetGrid.vue'
 import SheetInspector from '../components/sheet/SheetInspector.vue'
+import ElementInspector from '../components/sheet/ElementInspector.vue'
+import {
+  anchorToCell,
+  anchorToFree,
+  applyLayerAction,
+  createElement,
+  elementLabel,
+  maxZ,
+  normalizeElements,
+  shiftElementAnchors
+} from '../engine/elements'
+import type { LayerAction } from '../engine/elements'
 import FillDialog from '../components/sheet/FillDialog.vue'
 import SheetSetupDialog from '../components/sheet/SheetSetupDialog.vue'
 import UiContextMenu from '../ui/components/UiContextMenu.vue'
@@ -106,6 +118,7 @@ async function selectLayout(id: string): Promise<void> {
   if (!found) return
   const next = JSON.parse(JSON.stringify(found)) as LayoutPackage
   next.sheet = normalizeSheet(next.sheet)
+  next.elements = normalizeElements(next.elements, next.sheet)
   current.value = next
   selection.value = { r1: 0, c1: 0, r2: 0, c2: 0 }
   active.value = { row: 0, col: 0 }
@@ -115,7 +128,7 @@ async function selectLayout(id: string): Promise<void> {
 
 onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  window.addEventListener('keydown', onGlobalKey)
+  window.addEventListener('keydown', onGlobalKey, true)
   if (!state.ready) await loadAll()
   if (state.layouts.length) await selectLayout(state.layouts[0].id)
   else await createLayout()
@@ -123,7 +136,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
-  window.removeEventListener('keydown', onGlobalKey)
+  window.removeEventListener('keydown', onGlobalKey, true)
   window.clearTimeout(autosaveTimer)
   void flushAutosave()
 })
@@ -430,14 +443,15 @@ watch(activeCell, (c) => {
 
 // ---------- 单元格操作 ----------
 
-function setType(kind: 'seat' | 'podium' | 'block', role?: 'aisle' | 'lectern' | 'backdrop' | 'label'): void {
+function setType(kind: 'seat' | 'podium' | 'block', role?: 'aisle'): void {
   if (!current.value) return
   const s = current.value.sheet
   eachCell(s, range.value, (row, col, cell) => {
     const base: SheetCell = cell ? { ...cell } : { kind }
     if (kind === 'block') {
       base.kind = 'block'
-      base.role = role ?? 'label'
+      if (role) base.role = role
+      else delete base.role
       delete base.seats
       delete base.seatIds
       if (!base.text) base.text = blockRoleLabel(base.role)
@@ -538,7 +552,10 @@ function unmergeSelection(): void {
 
 function insertRow(): void {
   if (!current.value) return
-  insertRows(current.value.sheet, range.value.r1, range.value.r2 - range.value.r1 + 1)
+  const s = current.value.sheet
+  const n = range.value.r2 - range.value.r1 + 1
+  insertRows(s, range.value.r1, n)
+  shiftElementAnchors(current.value.elements, s, { axis: 'row', at: range.value.r1, count: n, remove: false })
   commit()
 }
 
@@ -551,13 +568,17 @@ function removeRows(): void {
     return
   }
   deleteRows(s, range.value.r1, n)
+  shiftElementAnchors(current.value.elements, s, { axis: 'row', at: range.value.r1, count: n, remove: true })
   selection.value = { r1: Math.min(range.value.r1, s.rows - 1), c1: range.value.c1, r2: Math.min(range.value.r1, s.rows - 1), c2: range.value.c2 }
   commit()
 }
 
 function insertCol(): void {
   if (!current.value) return
-  insertCols(current.value.sheet, range.value.c1, range.value.c2 - range.value.c1 + 1)
+  const s = current.value.sheet
+  const n = range.value.c2 - range.value.c1 + 1
+  insertCols(s, range.value.c1, n)
+  shiftElementAnchors(current.value.elements, s, { axis: 'col', at: range.value.c1, count: n, remove: false })
   commit()
 }
 
@@ -570,6 +591,7 @@ function removeCols(): void {
     return
   }
   deleteCols(s, range.value.c1, n)
+  shiftElementAnchors(current.value.elements, s, { axis: 'col', at: range.value.c1, count: n, remove: true })
   selection.value = { r1: range.value.r1, c1: Math.min(range.value.c1, s.cols - 1), r2: range.value.r2, c2: Math.min(range.value.c1, s.cols - 1) }
   commit()
 }
@@ -581,6 +603,109 @@ function clearSelection(): void {
     if (cell?.locked) return
     setCell(s, row, col, undefined)
   })
+  commit()
+}
+
+// ---------- 自由元素 ----------
+
+const selectedElementId = ref<string | null>(null)
+
+const selectedElement = computed<LayoutElement | null>(
+  () => current.value?.elements.find((e) => e.id === selectedElementId.value) ?? null
+)
+
+const selectedIsTop = computed(() => {
+  const list = current.value?.elements ?? []
+  const el = selectedElement.value
+  if (!el) return false
+  return el.zIndex >= Math.max(...list.map((e) => e.zIndex))
+})
+
+const selectedIsBottom = computed(() => {
+  const list = current.value?.elements ?? []
+  const el = selectedElement.value
+  if (!el) return false
+  return el.zIndex <= Math.min(...list.map((e) => e.zIndex))
+})
+
+function selectElement(id: string): void {
+  selectedElementId.value = id
+}
+
+function onSelectionChange(v: CellRange): void {
+  selection.value = v
+  selectedElementId.value = null
+}
+
+/** 拖动/缩放过程中只改数据不压历史，松手后才 commit */
+let reanchorPending: string | null = null
+
+function patchElement(id: string, patch: Partial<LayoutElement>, commitNow = false): void {
+  if (!current.value) return
+  const el = current.value.elements.find((e) => e.id === id)
+  if (!el) return
+  const changesGeometry = 'x' in patch || 'y' in patch || 'w' in patch || 'h' in patch
+  // 固定单元格的元素拖动时先固化几何，松手再重新锚定，视觉不跳
+  if (changesGeometry && el.anchor.mode === 'cell') {
+    anchorToFree(el, current.value.sheet)
+    reanchorPending = id
+  }
+  Object.assign(el, patch)
+  current.value.updatedAt = nowISO()
+  if (commitNow) finishCommit()
+  else markDirty()
+}
+
+/** 手势结束：把临时改为绝对坐标的元素按落点重新锚定回单元格 */
+function finishCommit(): void {
+  if (current.value && reanchorPending) {
+    const el = current.value.elements.find((e) => e.id === reanchorPending)
+    if (el) anchorToCell(el, current.value.sheet)
+  }
+  reanchorPending = null
+  commit()
+}
+
+function onElementCommit(): void {
+  finishCommit()
+}
+
+function addElement(kind: ElementKind): void {
+  if (!current.value) return
+  const el = createElement(kind, current.value.sheet, current.value.elements, { range: range.value })
+  current.value.elements.push(el)
+  selectedElementId.value = el.id
+  commit()
+  toast(`已添加${elementLabel(kind)}`)
+}
+
+function duplicateElement(): void {
+  if (!current.value || !selectedElement.value) return
+  const source = selectedElement.value
+  const copy = JSON.parse(JSON.stringify(source)) as LayoutElement
+  const wasCell = copy.anchor.mode === 'cell'
+  anchorToFree(copy, current.value.sheet)
+  copy.x += 16
+  copy.y += 16
+  if (wasCell) anchorToCell(copy, current.value.sheet)
+  copy.id = `el-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  copy.zIndex = maxZ(current.value.elements) + 1
+  current.value.elements.push(copy)
+  selectedElementId.value = copy.id
+  commit()
+  toast('已复制元素')
+}
+
+function removeElement(): void {
+  if (!current.value || !selectedElementId.value) return
+  current.value.elements = current.value.elements.filter((e) => e.id !== selectedElementId.value)
+  selectedElementId.value = null
+  commit()
+}
+
+function layerElement(action: LayerAction): void {
+  if (!current.value || !selectedElementId.value) return
+  applyLayerAction(current.value.elements, selectedElementId.value, action)
   commit()
 }
 
@@ -705,7 +830,7 @@ function onEdit(p: { row: number; col: number; text: string }): void {
   const text = p.text.trim()
   if (!cell) {
     if (!text) return
-    setCell(s, row, col, { kind: 'block', role: 'label', text })
+    setCell(s, row, col, { kind: 'block', text })
   } else if (cell.kind === 'seat' || cell.kind === 'podium') {
     const next: SheetCell = { ...cell }
     if (text) next.tableLabel = text
@@ -855,6 +980,27 @@ watch(
 )
 
 function onGlobalKey(e: KeyboardEvent): void {
+  const target = e.target as HTMLElement | null
+  const typing = !!target && (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT' ||
+    target.isContentEditable
+  )
+  if (!typing && selectedElementId.value) {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault()
+      e.stopPropagation()
+      removeElement()
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+      e.preventDefault()
+      e.stopPropagation()
+      duplicateElement()
+      return
+    }
+  }
   if (e.key !== 'Escape' || !assignZoneId.value) return
   e.preventDefault()
   stopZoneAssign()
@@ -976,6 +1122,7 @@ function onCommand(cmd: string): void {
         @merge="mergeSelection"
         @unmerge="unmergeSelection"
         @type="setType"
+        @element-add="addElement"
         @fill="fillOpen = true"
         @clear="clearSelection"
       />
@@ -987,14 +1134,31 @@ function onCommand(cmd: string): void {
           :selection="selection"
           :active="active"
           :zone-highlight="zoneHighlight"
-          @update:selection="selection = $event"
+          :elements="current.elements"
+          :selected-element-id="selectedElementId"
+          @update:selection="onSelectionChange"
           @update:active="active = $event"
           @commit="commit"
           @context="onContext"
           @edit="onEdit"
           @command="onCommand"
+          @element-select="selectElement"
+          @element-change="patchElement"
+          @element-commit="onElementCommit"
+        />
+        <ElementInspector
+          v-if="selectedElement"
+          :element="selectedElement"
+          :sheet="sheet"
+          :is-top="selectedIsTop"
+          :is-bottom="selectedIsBottom"
+          @update="(p, c) => patchElement(selectedElement!.id, p, c)"
+          @layer="layerElement"
+          @duplicate="duplicateElement"
+          @remove="removeElement"
         />
         <SheetInspector
+          v-else
           :sheet="sheet"
           :selection="selection"
           :active="active"
@@ -1089,9 +1253,6 @@ function onCommand(cmd: string): void {
       <UiMenuItem icon="seat" label="设为座位" @click="ctxRun(() => setType('seat'))" />
       <UiMenuItem icon="podium" label="设为主席台" @click="ctxRun(() => setType('podium'))" />
       <UiMenuItem icon="aisle" label="设为过道（不坐人）" @click="ctxRun(() => setType('block', 'aisle'))" />
-      <UiMenuItem icon="lectern" label="设为讲台（不坐人）" @click="ctxRun(() => setType('block', 'lectern'))" />
-      <UiMenuItem icon="rect" label="设为背景板（不坐人）" @click="ctxRun(() => setType('block', 'backdrop'))" />
-      <UiMenuItem icon="label" label="设为标签（不坐人）" @click="ctxRun(() => setType('block', 'label'))" />
       <div class="ctx-sep" />
       <div class="ctx-label">区域分配</div>
       <UiMenuItem

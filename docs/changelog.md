@@ -464,3 +464,71 @@ Toast 文案很短却横贯整个窗口，要求按内容自适应、最大宽�
 **验证**
 - `.probe/round24.mjs` 15/15（dev 与 `file://` 构建）：导出页列出快照、默认禁用删除、勾选高亮并显示数量、确认弹窗含后果说明、确认后 1→0 条并提示「已删除 1 个历史快照」；设置中心页头无重复入口、导出/导入按钮各仅 1 个；快照表显示 3 条 8.0 KB；清空弹窗含条数/释放空间/范围/不可撤销；清空后归零为 0 条 0 B，名册与项目统计不变；回到项目快照列表同步为空。截图 `out-r24-snap-confirm/clear-confirm/after-clear.png`。
 - `.probe/round23.mjs` 在构建产物上复跑 20/20；`vue-tsc --noEmit`、`npm run build` 通过。
+
+---
+
+## 2026-11-10 · 下拉统一定位与选项规格、类型清理、自由元素系统
+
+**用户要求**
+1. 「名册方案」「会场布局」等下拉弹层与触发器错位（向下偏、左边缘不齐、压住统计条），要求统一贴触发器下方 4px、左对齐、宽度不小于触发器，空间不足向上翻转，滚动/缩放后位置同步。
+2. 选项不要两行（名称 + 「30 人」副信息），每项只占一行；后续再修正为**不做内部滚动**：删掉可有可无的副信息与多余描述，靠精简文案和紧凑行高一次展示完。
+3. 类型工具栏去掉「标签」「背景板」，讲台改为独立图形元素而非单元格类型；旧数据仍可读取但不产生新数据。
+4. 新增自由元素系统：讲台、人形、箭头、门、双开门、话筒、桌牌、投影屏幕、绿植；任意位置拖动/缩放/旋转/改色/线宽/无边框/层级/复制删除；锚定方式可在「固定单元格 / 浮于单元格」间切换且视觉位置不变；会场布局、排座图、导出与打印都带元素。
+5. 元素库收进工具栏「添加元素」图标按钮，弹层用图标网格预览，选中即插入；默认锚定改为「浮于单元格」。
+6. 人形重画为头身贴合；门去掉开门弧线、新增双开门；元素文字支持字号/颜色/字体族；属性面板重做为分区标题 + 标签控件栅格 + 统一控件高度 + 图标化层级操作。
+
+**落地**
+- useAnchoredPopup.ts：统一 Teleport 到 body + fixed 定位；gap 4、左对齐、宽度 `max(触发器宽, minWidth)`；下方不足且上方更宽时向上翻转；`maxHeight` 传 0 表示不限制高度、不做内部滚动；scroll(capture)/resize/visualViewport/ResizeObserver 实时重算。
+- UiSelect.vue / UiDropdown.vue 接入该 composable；选择器选项改为单行 32px 紧凑行高，删除 `hint` 字段与副信息；`.ui-select-panel` 取消 `max-height` 与 `overflow-y:auto`。名册方案、会场布局、项目、单位、职级、成员、规则等全部下拉同步精简文案。
+- 类型工具栏只保留 座位 / 主席台 / 过道；`BlockRole` 的 `lectern | backdrop | label` 仅作旧数据读取，渲染为普通文字块；右键菜单去掉对应三项。
+- engine/elements.ts：9 类元素的独立 SVG 图形（`ELEMENT_SHAPES`）、默认尺寸/颜色/描边/文字比例、字体族列表（系统默认/黑体/宋体/楷体/仿宋）；`createElement` 默认浮于单元格（`cell: true` 才固定）；`normalizeElements` 兼容旧布局并透传 `fontSize/fontColor/fontFamily`；`anchorToCell`/`anchorToFree` 保证锚定切换视觉不跳；`shiftElementAnchors` 随行列增删同步；`applyLayerAction` 处理置顶/上移/下移/置底。
+- `SheetElementLayer.vue` 与 `engine/render.ts` 共用同一套图形与文字样式；画布支持拖动、四角缩放、旋转（Shift 吸附 15°）、层级；`SheetGrid` 只读模式下元素不拦截指针，`SeatBoard` 排座图正常显示且导出画布包含元素。
+- 工具栏新增「添加元素」下拉（`ElementLibrary.vue` 图标网格，可视化预览而非纯文字），插入后自动选中并打开属性面板；`ElementInspector.vue` 重做为六个分区：锚定方式（分段控件）、尺寸与旋转（滑块 + 数值联动、±15°/回正）、外观（色板 + 自定义、边框开关 + 线宽 + 线色）、文字（内容/字号/字体/颜色 + 快捷填字）、层级（四个图标按钮）、操作（复制、右侧留白后的删除）。
+
+**验证**
+- `.probe/round25.mjs` dev 46/46、`file://` 构建 45/45（导出像素扫描仅 dev 可跑）：工具栏只剩三种类型、右键菜单无旧类型；添加元素弹层 9 个不同图形、人形头身贴合、门仅门把手细节、双开门两扇；插入讲台默认无边框且锚定「浮于单元格」；拖动 70/50、四角缩放 190×74→230×104、旋转 87.5°、锚定往返 rect 完全一致；字号 30px、宋体、文字色 rgb(180,72,63) 生效；置底/置顶按 zIndex 正确；Ctrl+D/Delete 生效；固定单元格元素随插入行下移 64px；导出画布元素色像素 7125、空布局 0；排座图元素只读；下拉 gapY≈4、gapX=0、宽度一致、body+fixed、选项 32px 单行、无内部滚动、滚动后贴合、空间不足向上翻转且 gap≈4。
+- `vue-tsc --noEmit`、`npm run build` 通过；截图 `.probe/r25-library.png`、`r25-inspector-top.png`、`r25-element.png`、`r25-board.png`、`r25-dropdown.png`、`r25-dropdown-flip.png`。
+
+**追加修正 · 下拉视口高度兜底**
+- 弹层高度改为按视口动态封顶：上下各留 12px，上限取可用空间的 90%；上下都放不下时选空间更大的一侧，弹层不超出视口。
+- 正常条目数不写 `max-height`、不出现滚动条；仅当内容超过兜底上限的极端情况才写入 `max-height` 与 `overflow-y:auto`。
+- 窗口 resize、缩放、触发器尺寸变化后重新计算上限与落位（`useAnchoredPopup` 的 ResizeObserver / resize / visualViewport 监听）。
+- 复测：dev 49/49、`file://` 48/48；新增「弹层不超出视口」「上限不超过可用空间 90%」「窗口放大后重新计算上限与位置」三项断言。
+
+---
+
+## 2026-11-10 · 属性面板统一、锚定方式下线、文字位置
+
+**用户要求**
+
+1. 元素面板去掉「锚定方式」整段：元素固定浮于单元格，不再提供切换；旧数据里固定单元格的元素按原位置读取，但不暴露该选项，提示文案一并删除。
+2. 选区与元素两个属性面板控件与视觉统一：字体、区域等选择必须使用站内统一的自定义下拉（与「名册方案 / 会场布局」同一个 UiSelect），不出现浏览器原生 select；开关、色板、分段控件、分区标题、分隔线、内间距对齐同一套设计 token。
+3. 底部快捷键说明太挤：改为间距正常的短提示，或收进「快捷键」入口，不再挤成一长条小字。
+4. 元素文字补位置设置：水平对齐（左/中/右）、垂直对齐（上/中/下），并支持文字相对元素的 X/Y 偏移微调；导出图片同步。
+5. 复核选区面板、元素面板、排座规则面板三者的控件高度、圆角、字号、分区标题、色板与按钮样式。
+
+**落地**
+
+- `types.ts`：`LayoutElement` 新增 `textAlign / textVAlign / textOffsetX / textOffsetY`；`engine/elements.ts` 新增 `elementTextAlign / elementTextVAlign / elementTextOffset / elementTextPadding`，`normalizeElements` 兼容读取这些字段。
+- `SheetElementLayer.vue` 与 `engine/render.ts` 共用同一套对齐/偏移规则绘制文字（人形缺省贴底，其余居中），画布与导出位置一致。
+- `style.css` 新增 `.insp-*` 共用规格：面板 244px、内边距 12px、分区标题 12px/600、标签列 40px、控件高 28px、圆角 6px、开关 34×20、色板 21px（文字色 18px）、快捷按钮 24px、操作按钮 28px；`insp-keys` 为默认收起的快捷键入口。
+- `ElementInspector.vue` 重写：删除锚定分区与 `anchor` 事件；字体、线宽改用 UiSelect（线宽列表始终包含当前值，避免默认 1.4 显示成占位）；新增文字水平/垂直对齐分段与 X/Y 偏移（各自可归零）；快捷键收进 `<details>`；删除 `ElementLibrary` 中「可改为固定单元格」的提示。
+- `SheetInspector.vue` 重写视觉：原生 checkbox 改同款开关，原生取色器改色板 + 自定义取色，分区标题、间距与控件规格与元素面板一致；保留区域管理、座位、块内容、样式与统计。
+- `RulesPanel.vue` 对齐规格：标题改用 `.insp-title`（保留编号圆点），控件统一 28px 高、6px 圆角，启用开关改同款。
+- `LayoutView.vue` 移除 `setElementAnchor` 与 `@anchor` 绑定；旧 `cell` 锚定数据仍由 `resolveGeometry` 读取，拖动/缩放后按既有逻辑重新锚定。
+
+**验证**
+
+- `.probe/round25.mjs` dev 59/59、`file://` 57/57（导出像素扫描仅 dev 可跑）：元素面板无「锚定方式」、副标题为「浮于单元格」；面板内无原生 select；字体经 UiSelect 切到宋体；水平左对齐 `flex-start/left`、垂直上对齐 `flex-start`；偏移 `translate(18px, 9px)`；导出文字像素重心「左上」对比「右下」为 x 546→622、y 307→350；选区面板控件高度 [28,28,28,28]、标题 12px；规则面板控件 28px、圆角 6px、开关同款。
+- 三面板并排对照图 `.probe/r25-panels.png`（选区 / 元素 / 排座规则），分图 `.probe/r25-panel-sheet.png`、`r25-panel-element.png`、`r25-panel-rules.png`。
+- `vue-tsc --noEmit`、`npm run build` 通过（dist/index.html 1,528,609 字节，约 1.49 MB）。
+
+**复核修正 · 三处不一致收尾**
+
+并排图复查后又发现三处残留差异，本轮一并收干净：
+
+1. **色板统一为 20px 圆角方块**：删除 `.insp-swatch.is-sm` 的圆形规格；文字色不再用 16px 圆形按钮。填充色、文字色、选区面板的两套色板、自定义取色入口全部 20×20、圆角 5px；自定义取色不再露出原生 `<input type="color">` 的方形边框，改为 conic-gradient 底 + 透明 input 覆盖。
+2. **次要按钮统一为 28px 描边按钮**：选区面板的「清除底色」「清除选区归属」「＋ 新建区域」不再用纯文字链或 `UiButton`，统一放进 `.insp-actions` 用 `.insp-btn`（28px 高、6px 圆角、`--border-strong` 描边、12px 字号）；元素面板同步删除 X/Y 行内 24px 的「归零」小按钮，只保留 `.insp-quick` 里的「偏移归零」。
+3. **提示统一到 12px 并收进入口**：选区面板原有的三段 10px 灰色说明（座位定义、区域高亮、撤销）移除内联展示，合并为底部默认折叠的「提示」`<details class="insp-keys">`，正文 12px、行高 1.6，与元素面板「快捷键」同款。
+
+验证：`.probe/round25.mjs` 新增 4 条一致性断言（元素面板色板 20/20/5px、选区面板色板全部同形同尺寸、`.insp-actions` 含三个清除/新建按钮、选中面板内联 `.insp-note` 数量为 0 且提示字号 12px）；dev 63/63、`file://` 构建 61/61（导出像素扫描仅 dev 可跑）；`vue-tsc --noEmit` 退出码 0；`npm run build` 通过。最终并排图 `.probe/r25-panels.png` 由构建产物重新生成。

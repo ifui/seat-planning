@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { useAnchoredPopup } from '../useAnchoredPopup'
 
 const props = withDefaults(
   defineProps<{
@@ -16,30 +17,21 @@ const emit = defineEmits<{ (e: 'open'): void; (e: 'close'): void }>()
 const open = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
-const panelStyle = ref<Record<string, string>>({})
 
-function place(): void {
-  const el = rootRef.value
-  if (!el) return
-  const r = el.getBoundingClientRect()
-  const pw = props.width || panelRef.value?.offsetWidth || 200
-  let left = props.align === 'right' ? r.right - pw : r.left
-  left = Math.max(8, Math.min(left, window.innerWidth - pw - 8))
-  let top = r.bottom + 6
-  const ph = panelRef.value?.offsetHeight ?? 280
-  if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6)
-  const style: Record<string, string> = { left: left + 'px', top: top + 'px' }
-  if (props.width) style.width = props.width + 'px'
-  if (props.minWidth) style.minWidth = props.minWidth + 'px'
-  panelStyle.value = style
-}
+const { panelStyle, place, bind } = useAnchoredPopup(open, rootRef, panelRef, {
+  gap: 4,
+  width: props.width,
+  minWidth: props.minWidth,
+  align: props.align,
+  maxHeight: 520
+})
 
 function toggle(): void {
   if (open.value) close()
   else {
+    place()
     open.value = true
     emit('open')
-    nextTick(place)
   }
 }
 
@@ -60,28 +52,22 @@ function onKey(e: KeyboardEvent): void {
   if (e.key === 'Escape') close()
 }
 
-function onScroll(e: Event): void {
-  const t = e.target as Node | null
-  if (t && (panelRef.value?.contains(t) || rootRef.value?.contains(t))) return
-  close()
-}
-
-function bind(on: boolean): void {
-  if (on) {
+watch(open, (v) => {
+  bind(v)
+  if (v) {
     document.addEventListener('pointerdown', onDocDown, true)
     document.addEventListener('keydown', onKey)
-    window.addEventListener('resize', close)
-    window.addEventListener('scroll', onScroll, true)
   } else {
     document.removeEventListener('pointerdown', onDocDown, true)
     document.removeEventListener('keydown', onKey)
-    window.removeEventListener('resize', close)
-    window.removeEventListener('scroll', onScroll, true)
   }
-}
+})
 
-watch(open, bind)
-onBeforeUnmount(() => bind(false))
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocDown, true)
+  document.removeEventListener('keydown', onKey)
+  bind(false)
+})
 
 defineExpose({ close, toggle, open })
 </script>

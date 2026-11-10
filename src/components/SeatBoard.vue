@@ -241,6 +241,7 @@ defineExpose({ fitBoard, scrollToSeat })
     <SheetGrid
       ref="gridRef"
       :sheet="layout.sheet"
+      :elements="layout.elements ?? []"
       :selection="emptySel"
       :active="emptyActive"
       readonly

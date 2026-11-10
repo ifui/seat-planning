@@ -80,9 +80,7 @@ function flash(msg: string): void {
   setTimeout(() => { toast.value = '' }, 2200)
 }
 
-const rosterOptions = computed(() =>
-  state.rosters.map((r) => ({ value: r.id, label: r.name, hint: `${r.members.length} 人` }))
-)
+const rosterOptions = computed(() => state.rosters.map((r) => ({ value: r.id, label: r.name })))
 
 const sortedRanks = computed(() =>
   draft.value ? [...draft.value.ranks].sort((a, b) => a.order - b.order) : []

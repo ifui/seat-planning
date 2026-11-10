@@ -84,6 +84,7 @@ export function createBlankLayout(name = '新布局'): LayoutPackage {
     canvas: { width: 1400, height: 900, background: '#FFFFFF' },
     sheet,
     zones: [{ id: 'zone-stage', name: '主席台', color: '#DCE4EE', ruleTag: 'podium' }],
+    elements: [],
     createdAt: nowISO(),
     updatedAt: nowISO()
   }
@@ -247,7 +248,6 @@ export function normalizeSheet(input: Sheet): Sheet {
       next.kind = 'block'
       delete next.seats
       delete next.seatIds
-      if (!next.role) next.role = 'label'
     }
     cells[k] = next
   }
@@ -287,7 +287,7 @@ export function addMerge(s: Sheet, range: CellRange): string | null {
   }
   const anchor = cellAt(s, r.r1, r.c1)
   if (!anchor) {
-    s.cells[keyOf(r.r1, r.c1)] = { kind: 'block', role: 'label', text: '' }
+    s.cells[keyOf(r.r1, r.c1)] = { kind: 'block', text: '' }
   }
   s.merges.push({ row: r.r1, col: r.c1, rowSpan, colSpan })
   return null
@@ -590,11 +590,14 @@ export function blockRoleLabel(role?: BlockRole): string {
   switch (role) {
     case 'aisle':
       return '过道'
+    // 旧数据兼容：讲台、背景板、标签已不再作为单元格类型产生
     case 'lectern':
-      return '讲台'
+      return '讲台（旧）'
     case 'backdrop':
-      return '背景板'
+      return '背景板（旧）'
+    case 'label':
+      return '标签（旧）'
     default:
-      return '标签'
+      return '文字块'
   }
 }

@@ -662,18 +662,12 @@ const unseatedMembers = computed(() => {
   const seated = new Set(draft.value.assignments.map((a) => a.memberId))
   return presentMembers.value.filter((m) => !seated.has(m.id))
 })
-const projectOptions = computed(() =>
-  state.projects.map((p) => ({ value: p.id, label: p.name, hint: p.status === 'seated' ? '已排座' : '草稿' }))
-)
-const rosterOptions = computed(() =>
-  state.rosters.map((r) => ({ value: r.id, label: r.name, hint: `${r.members.length} 人` }))
-)
-const layoutOptions = computed(() =>
-  state.layouts.map((l) => ({ value: l.id, label: l.name, hint: `${l.sheet.rows} 排 × ${l.sheet.cols} 列` }))
-)
+const projectOptions = computed(() => state.projects.map((p) => ({ value: p.id, label: p.name })))
+const rosterOptions = computed(() => state.rosters.map((r) => ({ value: r.id, label: r.name })))
+const layoutOptions = computed(() => state.layouts.map((l) => ({ value: l.id, label: l.name })))
 const unseatedOptions = computed(() => [
   { value: '', label: '选择人员…' },
-  ...unseatedMembers.value.map((m) => ({ value: m.id, label: m.name, hint: rankById.value.get(m.rankId)?.name ?? '' }))
+  ...unseatedMembers.value.map((m) => ({ value: m.id, label: m.name }))
 ])
 
 async function save(): Promise<void> {

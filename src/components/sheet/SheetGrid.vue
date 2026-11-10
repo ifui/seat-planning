@@ -4,10 +4,11 @@
  * 只做交互与渲染；数据修改通过事件抛给 LayoutView，便于统一进撤销栈。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { MergeRange, Sheet, SheetCell } from '../../types'
+import type { LayoutElement, MergeRange, Sheet, SheetCell } from '../../types'
 import { cellAt, cellRect, collectBorderLines, colWidthAt, isCovered, mergeAt, rowHeightAt, seatsInRow, sheetSize } from '../../engine/sheet'
 import type { CellRange } from '../../engine/sheet'
 import SheetCellBox from './SheetCellBox.vue'
+import SheetElementLayer from './SheetElementLayer.vue'
 import type { CellView } from './cellView'
 
 const props = defineProps<{
@@ -18,6 +19,10 @@ const props = defineProps<{
   zoneHighlight?: { id: string; color: string } | null
   /** 只读展示（排座图）：隐藏选区/编辑/辅助网格，保留网格几何与行列头 */
   readonly?: boolean
+  /** 自由元素（讲台、人形、箭头等） */
+  elements?: LayoutElement[]
+  /** 当前选中的元素 id */
+  selectedElementId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -27,6 +32,9 @@ const emit = defineEmits<{
   (e: 'context', p: { x: number; y: number; row: number; col: number }): void
   (e: 'edit', p: { row: number; col: number; text: string }): void
   (e: 'command', cmd: 'copy' | 'paste' | 'clear' | 'undo' | 'redo' | 'fill-down' | 'fill-right'): void
+  (e: 'element-select', id: string): void
+  (e: 'element-change', id: string, patch: Partial<LayoutElement>): void
+  (e: 'element-commit'): void
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -74,7 +82,8 @@ function viewOf(row: number, col: number, cell: SheetCell, merge?: MergeRange): 
     text: cell.text ?? '',
     label: cell.tableLabel ?? '',
     seats: cell.kind === 'seat' || cell.kind === 'podium' ? (cell.seats ?? 1) : 0,
-    tone: cell.kind === 'podium' ? 'podium' : cell.kind === 'block' ? `block is-${cell.role ?? 'label'}` : 'seat',
+    // 只有过道保留纹理；旧数据的讲台/背景板/标签按普通文字块渲染
+    tone: cell.kind === 'podium' ? 'podium' : cell.kind === 'block' ? (cell.role === 'aisle' ? 'block is-aisle' : 'block') : 'seat',
     disabled: !!cell.disabled,
     fill: cell.style?.fill,
     stroke: cell.style?.stroke,
@@ -932,6 +941,19 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
           <div class="sg-overlay">
             <slot name="overlay" :seats="seatSlots" />
           </div>
+
+          <!-- 自由元素层：讲台、人形、箭头等，独立于单元格 -->
+          <SheetElementLayer
+            v-if="elements?.length"
+            :elements="elements"
+            :sheet="sheet"
+            :selected-id="selectedElementId ?? null"
+            :editable="!readonly"
+            :scale="scale"
+            @select="(id) => emit('element-select', id)"
+            @change="(id, patch) => emit('element-change', id, patch)"
+            @commit="emit('element-commit')"
+          />
 
           <input
             v-if="editing && !readonly && !editInCorner && !editInRows && !editInCols"

@@ -55,11 +55,8 @@ const cellStyle = computed(() => {
   border-radius: 0;
   font-size: 12px; color: var(--text-muted);
 }
-/* 特殊块按用途区分，避免整张表全是同一种灰白 */
+/* 过道用斜纹区分；其余文字块保持朴素白底 */
 .sg-block.is-aisle { background: repeating-linear-gradient(45deg, #f8f9f9, #f8f9f9 7px, #f0f2f2 7px, #f0f2f2 14px); }
-.sg-block.is-lectern { background: #f4f7f8; color: var(--text-secondary); }
-.sg-block.is-backdrop { background: #eef2f3; color: var(--text-secondary); }
-.sg-block.is-label { background: #fff; color: var(--text-disabled); }
 .sg-block-text {
   padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.25;

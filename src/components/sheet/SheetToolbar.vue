@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { ElementKind } from '../../types'
+import ElementLibrary from './ElementLibrary.vue'
 import UiButton from '../../ui/components/UiButton.vue'
 import UiDropdown from '../../ui/components/UiDropdown.vue'
 import UiIconButton from '../../ui/components/UiIconButton.vue'
@@ -43,7 +45,8 @@ const emit = defineEmits<{
   (e: 'delete-col'): void
   (e: 'merge'): void
   (e: 'unmerge'): void
-  (e: 'type', kind: 'seat' | 'podium' | 'block', role?: 'aisle' | 'lectern' | 'backdrop' | 'label'): void
+  (e: 'type', kind: 'seat' | 'podium' | 'block', role?: 'aisle'): void
+  (e: 'element-add', kind: ElementKind): void
   (e: 'fill'): void
   (e: 'clear'): void
   (e: 'border', kind: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom' | 'none'): void
@@ -87,9 +90,16 @@ const emit = defineEmits<{
       <UiButton variant="ghost" size="sm" icon="seat" @click="emit('type', 'seat')">座位</UiButton>
       <UiButton variant="ghost" size="sm" icon="podium" @click="emit('type', 'podium')">主席台</UiButton>
       <UiButton variant="ghost" size="sm" icon="aisle" @click="emit('type', 'block', 'aisle')">过道</UiButton>
-      <UiButton variant="ghost" size="sm" icon="lectern" @click="emit('type', 'block', 'lectern')">讲台</UiButton>
-      <UiButton variant="ghost" size="sm" icon="rect" @click="emit('type', 'block', 'backdrop')">背景板</UiButton>
-      <UiButton variant="ghost" size="sm" icon="label" @click="emit('type', 'block', 'label')">标签</UiButton>
+
+      <span class="st-divider" />
+      <UiDropdown :width="300" align="left">
+        <template #trigger>
+          <UiButton variant="ghost" size="sm" icon="layers">添加元素</UiButton>
+        </template>
+        <template #default="{ close }">
+          <ElementLibrary @add="(k) => { emit('element-add', k); close() }" />
+        </template>
+      </UiDropdown>
 
       <span class="st-divider" />
       <UiDropdown align="left" :width="248">

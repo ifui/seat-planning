@@ -15,19 +15,19 @@ const props = defineProps<{
 
 const sortedRanks = computed(() => [...props.ranks].sort((a, b) => a.order - b.order))
 
-// 触发器里放短标签，完整含义放在下拉项的 hint 里，避免侧栏宽度截断
+// 下拉项只保留名称，说明文案统一放在侧栏的提示里
 const EVEN_OPTIONS = [
-  { value: 'left', label: '左中位', hint: '偶数主席台：1 号在左中位' },
-  { value: 'right', label: '右中位', hint: '偶数主席台：1 号在右中位' }
+  { value: 'left', label: '左中位' },
+  { value: 'right', label: '右中位' }
 ]
 const HALL_ORDER_OPTIONS = [
-  { value: 'center-out', label: '中间向两侧', hint: '1 号居中，向左右交替展开' },
-  { value: 'left-to-right', label: '从左到右', hint: '每排从左边第 1 座开始' },
-  { value: 'right-to-left', label: '从右到左', hint: '每排从右边第 1 座开始' }
+  { value: 'center-out', label: '中间向两侧' },
+  { value: 'left-to-right', label: '从左到右' },
+  { value: 'right-to-left', label: '从右到左' }
 ]
 const UNIT_ORDER_OPTIONS = [
-  { value: 'continuous', label: '同单位连续', hint: '同单位的人坐在一起' },
-  { value: 'interleave', label: '各单位交替', hint: '不同单位的人交替就座' }
+  { value: 'continuous', label: '同单位连续' },
+  { value: 'interleave', label: '各单位交替' }
 ]
 const BY_OPTIONS = [
   { value: 'row', label: '按排' },
@@ -238,7 +238,7 @@ function savePicker(): void {
 
     <!-- ① 职级分层 -->
     <div class="rules-head">
-      <div class="rules-title">
+      <div class="insp-title">
         <b>1</b>
         <span>职级分层</span>
       </div>
@@ -255,9 +255,9 @@ function savePicker(): void {
           </div>
           <template v-if="t.by === 'row'">
             <span class="tr-txt">第</span>
-            <input v-model.number="t.from" type="number" class="input tr-num" min="1" />
+            <input v-model.number="t.from" type="number" class="insp-input tr-num" min="1" />
             <span class="tr-txt">–</span>
-            <input v-model.number="t.to" type="number" class="input tr-num" min="1" />
+            <input v-model.number="t.to" type="number" class="insp-input tr-num" min="1" />
             <span class="tr-txt">排</span>
           </template>
           <div v-else class="tr-zone">
@@ -290,7 +290,7 @@ function savePicker(): void {
 
     <!-- ② 区域人员分配 -->
     <div class="rules-head">
-      <div class="rules-title">
+      <div class="insp-title">
         <b>2</b>
         <span>区域人员分配</span>
       </div>
@@ -307,8 +307,11 @@ function savePicker(): void {
             <UiSelect v-model="rule.zoneId" :options="zoneOnlyOptions" size="sm" placeholder="选择区域" />
           </div>
           <label class="zr-switch">
-            <input v-model="rule.enabled" type="checkbox" />
-            <span>启用</span>
+            <span class="insp-switch-txt">启用</span>
+            <span class="insp-switch">
+              <input v-model="rule.enabled" type="checkbox" />
+              <span class="insp-switch-track" />
+            </span>
           </label>
           <button class="tr-del zr-undo" :disabled="!zoneUndo.length" title="撤销上次区域修改" @click="undoZone">↺</button>
           <button class="tr-del" title="删除这条区域规则" @click="removeZoneRule(rule.id)">×</button>
@@ -395,33 +398,25 @@ function savePicker(): void {
 /* 基础排法：一项一行，标签在上、下拉占满整行宽度 */
 .rules-stack { display: flex; flex-direction: column; gap: 8px; }
 .rules-stack .field { display: flex; flex-direction: column; gap: 4px; }
-.rules-stack .field label { font-size: 11px; color: var(--text-muted); }
-.rules-stack .ui-select-label { font-size: 11.5px; }
+.rules-stack .field label { font-size: var(--fs-xs); color: var(--text-secondary); }
+.rules-stack .ui-select-label { font-size: var(--fs-xs); }
 .rules-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin-bottom: 6px;
 }
-.rules-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.rules-title b {
-  flex: none; width: 16px; height: 16px; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--primary-soft); color: var(--primary);
-  font-size: 10px; font-weight: 600;
-}
-.rules-title span { flex: none; font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.rules-empty { font-size: 11px; color: var(--text-disabled); line-height: 1.5; margin: 2px 0 6px; }
+.rules-empty { font-size: var(--fs-xs); color: var(--text-disabled); line-height: 1.5; margin: 2px 0 6px; }
 
-.rules-panel .divider { margin: 10px 0; }
+.rules-panel .divider { margin: 12px 0; }
 .tier-list, .zone-list { display: flex; flex-direction: column; gap: 6px; }
 .tr {
   display: flex; flex-direction: column; gap: 6px;
-  padding: 7px 9px; border-radius: 6px;
+  padding: 7px 9px; border-radius: var(--radius-xs);
   background: var(--bg-subtle); border: 1px solid var(--border-soft);
 }
 .tr-head { display: flex; align-items: center; gap: 5px; min-height: 28px; }
 .tr-by { width: 78px; flex: none; }
-.tr-txt { flex: none; font-size: 11px; color: var(--text-muted); }
-.tr-num { height: 26px; width: 42px; flex: none; padding: 0 4px; font-size: 11.5px; text-align: center; }
+.tr-txt { flex: none; font-size: var(--fs-xs); color: var(--text-secondary); }
+.tr-num { width: 42px; flex: none; padding: 0 4px; text-align: center; }
 .tr-zone { flex: 1; min-width: 0; }
 .tr-del {
   margin-left: auto; flex: none; width: 20px; height: 20px; padding: 0;
@@ -437,35 +432,34 @@ function savePicker(): void {
 
 /* 职级多选按钮：一行展示已选范围，点开弹窗勾选，替代整墙胶囊 */
 .rank-pick {
-  flex: 1; min-width: 0; height: 26px; padding: 0 8px;
+  flex: 1; min-width: 0; height: 28px; padding: 0 8px;
   display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); border-radius: 4px;
-  background: var(--bg); font-family: inherit; font-size: 11px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  background: var(--bg-panel); font-size: var(--fs-xs);
   color: var(--text-secondary); cursor: pointer;
 }
 .rank-pick:hover { border-color: var(--primary-line); color: var(--text-primary); }
 .rank-pick.on { background: var(--primary-soft); border-color: var(--primary-line); }
 .rank-pick.ex.on { background: var(--danger-soft); border-color: var(--danger-line); }
-.rank-pick-k { flex: none; font-size: 11px; color: var(--text-disabled); }
+.rank-pick-k { flex: none; font-size: var(--fs-xs); color: var(--text-disabled); }
 .rank-pick-v { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
-.rank-pick-n { flex: none; font-size: 10.5px; color: var(--text-disabled); font-variant-numeric: tabular-nums; }
+.rank-pick-n { flex: none; font-size: 11px; color: var(--text-disabled); font-variant-numeric: tabular-nums; }
 .rank-pick-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; }
 .rank-dot { flex: none; width: 9px; height: 9px; border-radius: 2px; }
 
 .zr {
   display: flex; flex-direction: column; gap: 6px;
-  padding: 7px 9px; border-radius: 6px;
+  padding: 7px 9px; border-radius: var(--radius-xs);
   background: var(--bg-subtle); border: 1px solid var(--border-soft);
 }
 .zr-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
 .zr-zone { flex: 1; min-width: 0; }
-.zr-switch { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer; }
-.zr-switch input { margin: 0; accent-color: var(--primary); }
+.zr-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .zr-line { display: flex; align-items: flex-start; gap: 6px; }
-.zr-k { flex: none; width: 30px; padding-top: 5px; font-size: 11px; color: var(--text-disabled); }
+.zr-k { flex: none; width: 30px; padding-top: 5px; font-size: var(--fs-xs); color: var(--text-secondary); }
 .zr-adv summary {
   width: fit-content; cursor: pointer; list-style: none;
-  font-size: 11px; color: var(--text-disabled); user-select: none;
+  font-size: var(--fs-xs); color: var(--text-disabled); user-select: none;
 }
 .zr-adv summary::-webkit-details-marker { display: none; }
 .zr-adv summary::before { content: '› '; display: inline-block; transition: transform .12s ease; }
@@ -481,9 +475,9 @@ function savePicker(): void {
 .rules-help {
   margin-top: 12px; padding-top: 9px;
   border-top: 1px solid var(--border-soft);
-  font-size: 11.5px; line-height: 1.65; color: var(--text-secondary);
+  font-size: var(--fs-xs); line-height: 1.65; color: var(--text-secondary);
 }
-.rules-help-title { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+.rules-help-title { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
 .rules-help ul { margin: 0; padding-left: 16px; }
 
 .picker-list { max-height: 320px; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }

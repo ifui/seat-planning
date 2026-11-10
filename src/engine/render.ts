@@ -1,5 +1,6 @@
 import type { Assignment, LayoutPackage, Member, RosterPlan, SheetCell } from '../types'
 import { cellRect, cellAt, collectBorderLines, isCovered, mergeAt, seatsInRow, sheetSize } from './sheet'
+import { ELEMENT_SHAPES, elementMeta, elementTextAlign, elementTextColor, elementTextOffset, elementTextPadding, elementTextVAlign, resolveGeometry } from './elements'
 
 export interface ChartOptions {
   layout: LayoutPackage
@@ -259,6 +260,66 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
     ctx.moveTo(ox + snap(line.x1), oy + snap(line.y1))
     ctx.lineTo(ox + snap(line.x2), oy + snap(line.y2))
     ctx.stroke()
+  }
+  ctx.restore()
+
+  // 自由元素：与画布同一份几何、同一套图形路径，位置比例一致
+  ctx.save()
+  const elementList = [...(layout.elements ?? [])].sort((a, b) => a.zIndex - b.zIndex)
+  for (const el of elementList) {
+    const g = resolveGeometry(el, layout.sheet)
+    if (g.w <= 0 || g.h <= 0) continue
+    const shape = ELEMENT_SHAPES[el.kind]
+    const rad = (el.rotation * Math.PI) / 180
+    const cx = g.x + g.w / 2
+    const cy = g.y + g.h / 2
+    const strokeW = (100 * el.strokeWidth) / Math.max(16, Math.min(g.w, g.h))
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(rad)
+    ctx.translate(-g.w / 2, -g.h / 2)
+    ctx.scale(g.w / 100, g.h / 100)
+    const path = new Path2D(shape.fill)
+    ctx.fillStyle = el.color
+    ctx.fill(path)
+    if (el.bordered) {
+      ctx.strokeStyle = el.stroke
+      ctx.lineWidth = strokeW
+      ctx.lineJoin = 'round'
+      ctx.stroke(path)
+    }
+    if (shape.lines?.length) {
+      ctx.strokeStyle = el.stroke
+      ctx.lineWidth = strokeW
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      for (const d of shape.lines) ctx.stroke(new Path2D(d))
+    }
+    ctx.restore()
+
+    if (el.text) {
+      const meta = elementMeta(el.kind)
+      const fs = Math.max(6, el.fontSize ?? Math.max(8, Math.min(26, g.h * meta.textRatio)))
+      const align = elementTextAlign(el)
+      const vAlign = elementTextVAlign(el)
+      const offset = elementTextOffset(el)
+      const padding = elementTextPadding(el)
+      const padX = padding.x * g.w
+      const padY = padding.y * g.h
+      ctx.save()
+      ctx.translate(cx, cy)
+      ctx.rotate(rad)
+      ctx.fillStyle = el.fontColor || elementTextColor(el.kind)
+      ctx.font = `${el.kind === 'person' ? 500 : 600} ${fs}px ${el.fontFamily || '"PingFang SC", "Microsoft YaHei", sans-serif'}`
+      ctx.textAlign = align
+      ctx.textBaseline = vAlign === 'middle' ? 'middle' : vAlign === 'top' ? 'top' : 'bottom'
+      const tx =
+        (align === 'left' ? -g.w / 2 + padX : align === 'right' ? g.w / 2 - padX : 0) + offset.x
+      const ty =
+        (vAlign === 'top' ? -g.h / 2 + padY : vAlign === 'bottom' ? g.h / 2 - padY : 0) + offset.y
+      ctx.fillText(el.text, tx, ty, Math.max(10, g.w - padX * 2))
+      ctx.restore()
+    }
   }
   ctx.restore()
 

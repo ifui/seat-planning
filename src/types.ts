@@ -47,7 +47,12 @@ export interface RosterPlan {
 /** 单元格类型：座位 / 主席台座位 / 特殊块（不坐人） */
 export type CellKind = 'seat' | 'podium' | 'block'
 
-/** 特殊块的用途，仅 kind === 'block' 时有效 */
+/**
+ * 特殊块的用途，仅 kind === 'block' 时有效。
+ * 现在只产生 'aisle'（过道）与空用途（纯文字块）；
+ * 'lectern' / 'backdrop' / 'label' 是旧数据的兼容值，读得到但不再写入。
+ * 讲台已改为自由元素（见 LayoutElement），不再占用单元格。
+ */
 export type BlockRole = 'aisle' | 'lectern' | 'backdrop' | 'label'
 
 export type BorderSide = 'top' | 'right' | 'bottom' | 'left'
@@ -82,9 +87,9 @@ export interface SheetCell {
   tableId?: string
   tableLabel?: string
   zoneId?: string
-  /** kind === 'block' 时的用途 */
+  /** kind === 'block' 时的用途；旧数据可能是 lectern / backdrop / label */
   role?: BlockRole
-  /** 块内显示文字（讲台、背景板、标签） */
+  /** 块内显示文字 */
   text?: string
   style?: CellStyle
   /** 锁定：不再被批量填充/清空覆盖 */
@@ -143,8 +148,83 @@ export interface LayoutPackage {
   canvas: CanvasConfig
   sheet: Sheet
   zones: ZoneDef[]
+  /** 自由元素：讲台、人形、箭头、门、话筒等，位于表格之上的独立图层 */
+  elements: LayoutElement[]
   createdAt: string
   updatedAt: string
+}
+
+// ---------- 自由元素 ----------
+
+/** 元素类型：每个都是独立图形，不占用单元格 */
+export type ElementKind =
+  | 'podium'
+  | 'person'
+  | 'arrow'
+  | 'door'
+  | 'double-door'
+  | 'mic'
+  | 'plaque'
+  | 'screen'
+  | 'plant'
+
+/**
+ * 锚定方式：
+ * - cell：绑定单元格/区域，随行列增删与尺寸变化跟随移动；
+ * - free：绝对坐标，不随单元格变化。
+ */
+export type ElementAnchorMode = 'cell' | 'free'
+
+export interface ElementAnchor {
+  mode: ElementAnchorMode
+  /** 锚定区域左上角（工作表坐标） */
+  row: number
+  col: number
+  rowSpan: number
+  colSpan: number
+  /** 元素相对锚定区域的偏移与缩放比例，用于切换锚定方式时保持视觉位置不变 */
+  ox: number
+  oy: number
+  sw: number
+  sh: number
+}
+
+export interface LayoutElement {
+  id: string
+  kind: ElementKind
+  /** 自由坐标（工作表坐标系，单位与单元格一致） */
+  x: number
+  y: number
+  w: number
+  h: number
+  /** 旋转角度（度，顺时针） */
+  rotation: number
+  /** 填充色 */
+  color: string
+  /** 边框色 */
+  stroke: string
+  strokeWidth: number
+  /** 是否显示边框；讲台等元素默认无边框 */
+  bordered: boolean
+  /** 元素内文字（桌牌、人形、讲台常用） */
+  text: string
+  /** 文字字号（工作表单位）；为空时按元素高度自动推算 */
+  fontSize?: number
+  /** 文字颜色；为空时按元素底色自动取深色/白色 */
+  fontColor?: string
+  /** 文字字体族（CSS font-family） */
+  fontFamily?: string
+  /** 文字水平对齐；缺省居中 */
+  textAlign?: 'left' | 'center' | 'right'
+  /** 文字垂直对齐；缺省居中（人形缺省贴底） */
+  textVAlign?: 'top' | 'middle' | 'bottom'
+  /** 文字相对元素中心点的水平偏移（工作表单位） */
+  textOffsetX?: number
+  /** 文字相对元素中心点的垂直偏移（工作表单位） */
+  textOffsetY?: number
+  /** 层级：数值越大越靠上 */
+  zIndex: number
+  anchor: ElementAnchor
 }
 
 /** 布局预设：保存一份可复用的布局快照，从预设新建时复制并重生成座位 id */

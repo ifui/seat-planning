@@ -42,7 +42,7 @@ watch(
 )
 
 const rosterOptions = computed(() =>
-  state.rosters.map((r) => ({ value: r.id, label: r.name, hint: `${r.members.length} 人` }))
+  state.rosters.map((r) => ({ value: r.id, label: r.name }))
 )
 
 function childrenOf(parentId: string | null): UnitNode[] {

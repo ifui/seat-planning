@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { RosterPlan, UnitNode } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
-import { UiSelect, UiModal } from '../ui'
+import { UiSelect, UiModal, UiIconButton } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -286,18 +286,24 @@ function askDelete(u: UnitNode): void {
 
 <template>
   <header class="page-head">
-    <div>
-      <div class="page-eyebrow">名册与组织 / 单位编制序列</div>
+    <div class="page-head-main">
+      <div class="page-eyebrow has-back">
+        <UiIconButton
+          class="seq-back"
+          icon="chevronLeft"
+          :icon-size="12"
+          title="返回名册方案"
+          aria-label="返回名册方案"
+          @click="back"
+        />
+        <span>名册与组织 / 单位编制序列</span>
+      </div>
       <h1 class="page-title">单位编制序列</h1>
     </div>
     <div class="head-actions">
       <div style="width: 176px">
         <UiSelect v-model="selectedId" :options="rosterOptions" placeholder="选择名册方案" size="sm" />
       </div>
-      <button class="btn sm" @click="back">
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M6 1L2 5l4 4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
-        返回名册
-      </button>
       <button class="btn sm" @click="openAdd(null)">新增单位</button>
       <button class="btn sm primary" :disabled="!dirty" @click="save">{{ dirty ? '保存改动' : '已保存' }}</button>
     </div>

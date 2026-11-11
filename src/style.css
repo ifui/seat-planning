@@ -211,6 +211,26 @@ progress {
   max-width: 70ch;
   line-height: 1.7;
 }
+/* 序列页返回：面包屑行首的轻量箭头；负外边距抵消 24px 视觉高度对 20px 行高的影响 */
+.page-eyebrow.has-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.icon-btn.seq-back {
+  width: 24px;
+  height: 24px;
+  margin: -2px 0 -2px -5px;
+  color: var(--text-secondary);
+  flex: none;
+  position: relative;
+}
+/* 视觉 24px，命中区扩到 32px，不参与布局计算 */
+.icon-btn.seq-back::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
 .head-actions {
   display: flex;
   gap: 8px;
@@ -891,6 +911,22 @@ details.ui-fold[open] > summary::before {
   justify-content: space-between;
   gap: 16px;
   padding: 20px 24px 12px;
+}
+.umodal-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.umodal-head-text {
+  min-width: 0;
+}
+/* 复用属性面板 .insp-head-art 的 36px 方片规格，这里只补居中与文字色 */
+.umodal-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
 }
 .umodal-title {
   font-size: var(--fs-md);

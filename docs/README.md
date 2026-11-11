@@ -40,6 +40,8 @@ npm run dev        # 本地开发（Vite dev server）
 npm run build      # vue-tsc --noEmit 类型检查 + 构建单文件离线包
 npm run build:fast # 跳过类型检查，仅构建
 npm run preview    # 预览构建产物
+npm run desktop:dev   # 桌面端开发（Tauri v1，Rust 1.77.2）
+npm run desktop:build # 桌面端安装包（MSI / NSIS）
 ```
 
 构建产物固定为 `dist/index.html`。当前构建体积约 **1.41 MB（1,407,343 字节）**，实测 `src`/`href` 指向 `http(s)` 的外链数为 0（JS 内部有 SVG/XML 命名空间字符串，不是网络请求）。
@@ -145,3 +147,4 @@ seat-planning/
 | [decisions.md](./decisions.md) | ADR：关键技术与产品决策 |
 | [changelog.md](./changelog.md) | 迭代日志与每轮需求落地情况 |
 | [known-issues.md](./known-issues.md) | 已知缺陷、限制、风险与下一步 |
+| [desktop-packaging.md](./desktop-packaging.md) | 桌面端打包：体积、WebView2 分发模式、Win7 支持与部署检查单 |

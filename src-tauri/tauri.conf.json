@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "SeatPlanning",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": false,
+        "save": true,
+        "open": true
+      }
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "座位编排",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 1080,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.fu.seat-planning",
+      "category": "Productivity",
+      "shortDescription": "座位编排系统",
+      "longDescription": "本地离线的会议座位编排工具：名册、会场布局、自动排座、导出与历史快照。",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "windows": {
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        }
+      }
+    }
+  }
+}

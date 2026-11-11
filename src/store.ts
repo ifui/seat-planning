@@ -4,7 +4,7 @@ import { buildSeed, repository, type StorageMode } from './data'
 
 export const state = reactive({
   ready: false,
-  /** 存储模式：indexeddb / local（file:// 下的 localStorage）/ memory（仅当次有效） */
+  /** 存储模式：sqlite（桌面端）/ indexeddb / local（file:// 下的 localStorage）/ memory（仅当次有效） */
   storage: 'indexeddb' as StorageMode,
   persistent: true,
   rosters: [] as RosterPlan[],

@@ -2,13 +2,13 @@
  * 持久化仓储边界。
  *
  * 视图与 store 只通过本接口读写数据，不接触具体后端。
- * 当前实现是 IndexedDB（dexie）；迁移 Tauri v2 时新增一个 SQLite 实现即可，
- * 视图层不需要改动。
+ * 浏览器环境使用 IndexedDB（dexie）；Tauri 桌面端优先使用 SQLite，
+ * 初始化失败时自动回退到 IndexedDB，接口与视图层都不需要感知。
  */
 import type { LayoutPackage, LayoutPreset, Project, RosterPlan, Snapshot } from '../types'
 
-/** 实际可用的存储后端：indexeddb / file:// 下的 localStorage / 仅内存 */
-export type StorageMode = 'indexeddb' | 'local' | 'memory'
+/** 实际可用的存储后端：SQLite / IndexedDB / file:// 下的 localStorage / 仅内存 */
+export type StorageMode = 'sqlite' | 'indexeddb' | 'local' | 'memory'
 
 /** 一次读取的全量业务数据 */
 export interface Tables {

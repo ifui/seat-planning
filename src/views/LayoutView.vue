@@ -4,6 +4,7 @@
  * 数据模型：行列 → 单元格（座位 / 主席台 / 特殊块），排号与座号由格子决定。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { saveFile } from '../platform/files'
 import type { BorderSide, CellStyle, ElementKind, LayoutElement, LayoutPackage, Sheet, SheetCell } from '../types'
 import type { CellRange } from '../engine/sheet'
 import {
@@ -172,14 +173,10 @@ async function save(): Promise<void> {
   toast('已保存到本地')
 }
 
-function exportJson(): void {
+async function exportJson(): Promise<void> {
   if (!current.value) return
-  const blob = new Blob([JSON.stringify(current.value, null, 2)], { type: 'application/json' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `${current.value.name}.json`
-  a.click()
-  URL.revokeObjectURL(a.href)
+  const res = await saveFile(`${current.value.name}.json`, JSON.stringify(current.value, null, 2), 'json')
+  if (res.saved) toast('已导出布局 JSON')
 }
 
 // ---------- 布局切换与编辑 ----------

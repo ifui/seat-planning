@@ -50,6 +50,7 @@ import {
 } from "../engine/sheet";
 import { renderSeatChart } from "../engine/render";
 import { preferences } from "../preferences";
+import { printHtml, saveFile } from "../platform/files";
 import SeatBoardPane from "../components/project/SeatBoardPane.vue";
 import RulesPanel from "../components/RulesPanel.vue";
 import ImportDialog from "../components/roster/ImportDialog.vue";
@@ -2544,19 +2545,24 @@ function chartCanvas(scale: number): {
   return { canvas, scale: used };
 }
 
-function exportPng(): void {
+async function exportPng(): Promise<void> {
   if (!draft.value || !layout.value || !roster.value) return;
   const { canvas, scale } = chartCanvas(exportScale.value);
   if (scale < exportScale.value)
     flash(`画幅较大，已按 ${scale.toFixed(1)}× 输出`);
-  canvas.toBlob((blob) => {
-    if (!blob) return;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${draft.value!.name.replace(/\s+/g, "-")}.png`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }, "image/png");
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!blob) {
+    flash("图片导出失败");
+    return;
+  }
+  const res = await saveFile(
+    `${draft.value.name.replace(/\s+/g, "-")}.png`,
+    blob,
+    "png",
+  );
+  if (res.saved) flash("已导出 PNG 图片");
 }
 
 const STATUS_LABEL: Record<AttendStatus, string> = {
@@ -2565,7 +2571,7 @@ const STATUS_LABEL: Record<AttendStatus, string> = {
 };
 
 /** 导出排座结果明细：排号/座号来自工作表，人员信息来自名册 */
-function exportExcel(): void {
+async function exportExcel(): Promise<void> {
   if (!draft.value || !layout.value || !roster.value) return;
   const bySeat = new Map(draft.value.assignments.map((a) => [a.seatId, a]));
   const zoneName = (id?: string) =>
@@ -2622,20 +2628,18 @@ function exportExcel(): void {
     bookType: "xlsx",
     type: "array",
   }) as ArrayBuffer;
-  const url = URL.createObjectURL(
+  const res = await saveFile(
+    `${draft.value.name.replace(/\s+/g, "-")}.xlsx`,
     new Blob([buf], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }),
+    "xlsx",
   );
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${draft.value.name.replace(/\s+/g, "-")}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  if (res.saved) flash("已导出排座结果");
 }
 
 /** 一键导出当前项目在位人员名单：请假人员不导出 */
-function exportPresentRoster(): void {
+async function exportPresentRoster(): Promise<void> {
   if (!draft.value || !layout.value || !roster.value) return;
   const bySeat = new Map(draft.value.assignments.map((a) => [a.seatId, a]));
   const zoneName = (id?: string) =>
@@ -2683,45 +2687,26 @@ function exportPresentRoster(): void {
     bookType: "xlsx",
     type: "array",
   }) as ArrayBuffer;
-  const url = URL.createObjectURL(
+  const res = await saveFile(
+    `${draft.value.name.replace(/\s+/g, "-")}-在位人员名单.xlsx`,
     new Blob([buf], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }),
+    "xlsx",
   );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${draft.value.name.replace(/\s+/g, "-")}-在位人员名单.xlsx`;
-  link.click();
-  URL.revokeObjectURL(url);
-  flash(`已导出 ${rows.length - 1} 位在位人员`);
+  if (res.saved) flash(`已导出 ${rows.length - 1} 位在位人员`);
 }
 
-function printChart(): void {
+async function printChart(): Promise<void> {
   if (!draft.value || !layout.value || !roster.value) return;
   const { canvas } = chartCanvas(2);
   const url = canvas.toDataURL("image/png");
-  const iframe = document.createElement("iframe");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "0";
-  document.body.appendChild(iframe);
-  const doc = iframe.contentWindow?.document;
-  if (!doc) return;
-  doc.open();
-  doc.write(
+  const html =
     `<!doctype html><html><head><meta charset="utf-8"><title>${draft.value.name}</title>` +
-      `<style>@page{size:A4 ${paper.value};margin:8mm}html,body{margin:0;padding:0}img{width:100%;height:auto}</style>` +
-      `</head><body><img src="${url}" onload="window.focus()"></body></html>`,
-  );
-  doc.close();
-  setTimeout(() => {
-    iframe.contentWindow?.focus();
-    iframe.contentWindow?.print();
-    setTimeout(() => document.body.removeChild(iframe), 800);
-  }, 400);
+    `<style>@page{size:A4 ${paper.value};margin:8mm}html,body{margin:0;padding:0}img{width:100%;height:auto}</style>` +
+    `</head><body><img src="${url}" onload="window.focus()"></body></html>`;
+  const mode = await printHtml(draft.value.name, html);
+  if (mode === "system") flash("已在系统浏览器中打开打印页，请使用浏览器打印");
 }
 
 // ---- 快照恢复 ----

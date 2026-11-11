@@ -9,6 +9,7 @@ import { repository, type StorageUsage } from '../data'
 import { loadAll, state } from '../store'
 import type { RosterPlan, Snapshot } from '../types'
 import { applySeatCapacity, applySeatOverlay, seatsOfSheet } from '../engine/sheet'
+import { saveFile } from '../platform/files'
 import { preferences, resetPreferences, type ExportScale, type PaperSide } from '../preferences'
 import { UiChart, UiIcon, UiModal, UiSelect } from '../ui'
 import { chartAxisText, chartColors, chartFont, chartTooltip, type ChartOption } from '../ui/charts'
@@ -44,7 +45,13 @@ watch(
 )
 
 const storageLabel = computed(() =>
-  state.storage === 'indexeddb' ? 'IndexedDB' : state.storage === 'local' ? '本地存储' : '仅内存'
+  state.storage === 'sqlite'
+    ? 'SQLite 本机数据库'
+    : state.storage === 'indexeddb'
+      ? 'IndexedDB'
+      : state.storage === 'local'
+        ? '本地存储'
+        : '仅内存'
 )
 
 const exportScaleOptions = [
@@ -313,23 +320,15 @@ function openSnapshots(): void {
   snapshotOpen.value = true
 }
 
-function download(name: string, body: string, type: string): void {
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(new Blob([body], { type }))
-  a.download = name
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
-}
-
 async function backupAll(): Promise<void> {
   try {
     const json = await repository.exportAll()
-    download(`seat-planning-backup-${new Date().toISOString().slice(0, 10)}.json`, json, 'application/json')
+    const res = await saveFile(`seat-planning-backup-${new Date().toISOString().slice(0, 10)}.json`, json, 'json')
     backupNoticeWarn.value = false
-    backupNotice.value = '已导出全量备份，请妥善保存该文件。'
+    backupNotice.value = res.saved ? '已导出全量备份，请妥善保存该文件。' : '已取消导出。'
   } catch {
     backupNoticeWarn.value = true
-    backupNotice.value = '当前浏览器不支持本机数据库，备份不可用。'
+    backupNotice.value = '当前环境不支持本机数据库，备份不可用。'
   }
 }
 
@@ -458,7 +457,7 @@ async function clearAll(): Promise<void> {
       <span class="tool-num">{{ usage.snapshotCount }}</span>
     </button>
     <button class="btn" @click="aboutOpen = true">
-      <UiIcon name="list" :size="14" />关于
+      <UiIcon name="info" :size="14" />关于
     </button>
     <button class="btn danger" @click="clearOpen = true">
       <UiIcon name="trash" :size="14" />清空数据
@@ -541,7 +540,7 @@ async function clearAll(): Promise<void> {
       </div>
       <div class="settings-usage-row">
         <span>存储位置</span>
-        <b>{{ storageLabel }} · {{ state.persistent ? '关闭浏览器后保留' : '仅本次会话有效' }}</b>
+        <b>{{ storageLabel }} · {{ state.persistent ? '关闭应用后保留' : '仅本次会话有效' }}</b>
       </div>
     </div>
     <p class="modal-note">将删除全部名册方案、会场布局、排座项目、历史快照与布局预设。</p>
@@ -551,12 +550,12 @@ async function clearAll(): Promise<void> {
     </template>
   </UiModal>
 
-  <UiModal v-model="aboutOpen" title="关于">
+  <UiModal v-model="aboutOpen" title="关于" icon="info">
     <dl class="about-meta">
       <div><dt>作者</dt><dd>ifui</dd></div>
       <div><dt>邮箱</dt><dd><a href="mailto:ifui@foxmail.com">ifui@foxmail.com</a></dd></div>
       <div><dt>版本</dt><dd>{{ appVersion }}</dd></div>
-      <div><dt>存储</dt><dd>{{ storageLabel }}{{ state.persistent ? ' · 关闭浏览器后保留' : ' · 仅本次会话有效' }}</dd></div>
+      <div><dt>存储</dt><dd>{{ storageLabel }}{{ state.persistent ? ' · 关闭应用后保留' : ' · 仅本次会话有效' }}</dd></div>
     </dl>
     <template #footer>
       <button class="btn" @click="aboutOpen = false">关闭</button>

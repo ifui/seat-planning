@@ -1,0 +1,8 @@
+# 桌面端工具链锁定：1.77.2 是最后一个支持 Windows 7 / 8 的 Rust 正式版
+# （1.78 起 MSVC 目标的最低系统要求提升到 Windows 10）。
+# CI 中 Win10/11 构建通过 RUSTUP_TOOLCHAIN=stable 覆盖本文件。
+#
+# 国内网络提示：清华 / 阿里云 / USTC 镜像缺 1.77.2，用
+#   $env:RUSTUP_DIST_SERVER='https://rsproxy.cn'; rustup toolchain install 1.77.2
+[toolchain]
+channel = "1.77.2"

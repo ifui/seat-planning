@@ -71,6 +71,7 @@ const PATHS: Record<string, string> = {
   seat: '<path d="M5 3v5.5M11 3v5.5M4 8.5h8V13H4z"/><path d="M5.5 13v1M10.5 13v1"/>',
   empty: '<rect x="3" y="4.5" width="10" height="7" rx="1.2" stroke-dasharray="2.5 2"/>',
   warning: '<path d="M8 2.8 13.5 12.5h-11z"/><path d="M8 6.5v3M8 11h.01" stroke-linecap="round"/>',
+  info: '<circle cx="8" cy="8" r="5.5"/><path d="M8 7.3v3.5M8 5.2h.01" stroke-linecap="round"/>',
   list: '<path d="M6 4h7M6 8h7M6 12h7M3 4h.01M3 8h.01M3 12h.01" stroke-linecap="round"/>',
   download: '<path d="M8 2.5v8M5 7.5 8 10.5l3-3M3 13.5h10"/>',
   render: '<path d="M2.5 8s2-3.5 5.5-3.5S13.5 8 13.5 8s-2 3.5-5.5 3.5S2.5 8 2.5 8z"/><circle cx="8" cy="8" r="1.6"/>',

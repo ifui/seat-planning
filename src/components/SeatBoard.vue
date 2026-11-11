@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
  * 排座图：复用布局页 SheetGrid 的网格几何（行列头、合并块、斜纹、缩放），
- * 只在其上叠加就座状态（姓名、职级、单位、锁定/请假）。
+ * 只在其上叠加就座状态（姓名、职级、单位、请假）。
  */
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { LayoutPackage, RuleSet } from '../types'
 import { seatOrderMap } from '../engine/seating'
 import { seatsOfSheet } from '../engine/sheet'
+import { UiIcon } from '../ui'
 import SheetGrid from './sheet/SheetGrid.vue'
 
 type CardInfo = {
@@ -16,7 +17,6 @@ type CardInfo = {
   duty?: string
   color: string
   status: string
-  locked: boolean
 }
 
 const props = defineProps<{
@@ -36,10 +36,12 @@ const props = defineProps<{
   showDuty?: boolean
   /** 座位下方信息：单位 */
   showUnit?: boolean
-  /** 批量容量模式：点击座位改为选中其所在桌 */
-  capacityMode?: boolean
-  /** 批量容量模式下已选中的桌（"行:列"） */
+  /** 当前框选/点选的单元格（"行:列"），默认即可用 */
   selectedCells?: string[]
+  /** 区域列表点选后的画布高亮 */
+  zoneHighlight?: { id: string; color: string } | null
+  /** 固定座位：seatId → memberId */
+  fixedSeats?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -67,8 +69,16 @@ function noOf(seatId: string, fallback: number): number {
   return orderMap.value.get(seatId) ?? fallback
 }
 
-function seatTitle(row: number, stage: boolean, no: number, info?: CardInfo): string {
+function seatTitle(
+  row: number,
+  stage: boolean,
+  no: number,
+  disabled: boolean,
+  info?: CardInfo
+): string {
   const where = stage ? '主席台' : `第 ${row + 1} 排`
+  // 不坐人统一用一种叫法，画布只保留斜纹，不再区分来源
+  if (disabled) return `${where} · 不坐人`
   const parts = [`${where} · ${no} 号`]
   if (info) {
     parts.push(info.name)
@@ -80,10 +90,14 @@ function seatTitle(row: number, stage: boolean, no: number, info?: CardInfo): st
 }
 
 function onPick(seatId: string, e: MouseEvent, row: number, col: number): void {
-  if (props.capacityMode) {
-    emit('cellPick', `${row}:${col}`)
+  const cellKey = `${row}:${col}`
+  // Ctrl / Cmd 点座位：追加到选区，不打开座位详情
+  if (e.ctrlKey || e.metaKey) {
+    emit('cellPick', cellKey)
     return
   }
+  // 普通点击：该格成为单选选区，同时打开座位详情
+  emit('cellSelect', [cellKey], false)
   emit('pick', seatId, e.currentTarget as HTMLElement, row, col)
 }
 
@@ -115,7 +129,7 @@ function fitBoard(): void {
   gridRef.value?.fitToWindow()
 }
 
-// ---------- 批量容量：空白处框选 ----------
+// ---------- 框选：默认可用，空白处拖动即可起手 ----------
 /** 选框用视口坐标绘制在面板根节点上，不受缩放层影响 */
 const marquee = ref<{ left: number; top: number; width: number; height: number } | null>(null)
 const marqueeing = ref(false)
@@ -194,7 +208,7 @@ function onMarqueeUp(e: PointerEvent): void {
 
 /** 框选必须从空白处起手：座位、行列头、缩放条一律不接管 */
 function onRootPointerDown(e: PointerEvent): void {
-  if (!props.capacityMode || e.button !== 0) return
+  if (e.button !== 0) return
   const t = e.target as HTMLElement | null
   if (!t || t.closest('.sb-seat') || t.closest('.sg-rh') || t.closest('.sg-ch') || t.closest('.sg-corner')) return
   // 底栏缩放控件、原生滚动条不接管，否则会抢掉点击/拖动滚动
@@ -235,7 +249,7 @@ defineExpose({ fitBoard, scrollToSeat })
   <div
     ref="rootRef"
     class="seat-board"
-    :class="{ 'is-capacity': capacityMode, 'is-marqueeing': marqueeing }"
+    :class="{ 'is-marqueeing': marqueeing }"
     @pointerdown.capture="onRootPointerDown"
   >
     <SheetGrid
@@ -244,6 +258,7 @@ defineExpose({ fitBoard, scrollToSeat })
       :elements="layout.elements ?? []"
       :selection="emptySel"
       :active="emptyActive"
+      :zone-highlight="zoneHighlight"
       readonly
     >
       <template #overlay="{ seats }">
@@ -256,14 +271,14 @@ defineExpose({ fitBoard, scrollToSeat })
             'is-filled': !!seatInfo[s.seatId],
             'is-disabled': s.disabled,
             'is-leave': seatInfo[s.seatId]?.status === 'leave',
-            'is-locked': seatInfo[s.seatId]?.locked,
             'is-selected': selectedSeatId === s.seatId,
             'is-focus': focusSeatId === s.seatId,
             'is-drag-source': dragFrom === s.seatId,
             'is-drag-over': dragOver === s.seatId,
             'is-flash': highlightSeatIds?.includes(s.seatId),
             'is-stage': s.stage,
-            'is-cell-picked': capacityMode && selectedCells?.includes(`${s.row}:${s.col}`)
+            'is-cell-picked': selectedCells?.includes(`${s.row}:${s.col}`),
+            'is-fixed': !!fixedSeats?.[s.seatId] && !s.disabled
           }"
           :style="{
             left: s.x + 'px',
@@ -272,11 +287,11 @@ defineExpose({ fitBoard, scrollToSeat })
             height: s.h + 'px',
             ...(seatInfo[s.seatId] ? { '--rank': seatInfo[s.seatId].color } : {})
           }"
-          :title="seatTitle(s.row, s.stage, noOf(s.seatId, s.seatNo), seatInfo[s.seatId])"
+          :title="seatTitle(s.row, s.stage, noOf(s.seatId, s.seatNo), s.disabled, seatInfo[s.seatId])"
           :data-seat-id="s.seatId"
           :data-row="s.row"
           :data-col="s.col"
-          :draggable="!capacityMode"
+          draggable="true"
           @click="onPick(s.seatId, $event, s.row, s.col)"
           @dragstart="onDragStart(s.seatId, $event)"
           @dragenter.prevent="onDragEnter(s.seatId)"
@@ -284,14 +299,22 @@ defineExpose({ fitBoard, scrollToSeat })
           @dragend="onDragEnd"
           @drop.prevent="onDrop(s.seatId)"
         >
-          <span v-if="s.disabled || showNos" class="sb-no">{{ s.disabled ? '固定' : noOf(s.seatId, s.seatNo) }}</span>
-          <span class="sb-name">{{ s.disabled ? '固定空位' : seatInfo[s.seatId]?.name || '空位' }}</span>
-          <span v-if="seatInfo[s.seatId]" class="sb-meta">
-            <span v-if="showRank">{{ seatInfo[s.seatId].rankName }}</span>
-            <span v-if="showDuty && seatInfo[s.seatId].duty">{{ seatInfo[s.seatId].duty }}</span>
-            <span v-if="showUnit && seatInfo[s.seatId].unitName">{{ seatInfo[s.seatId].unitName }}</span>
-          </span>
-          <i v-if="seatInfo[s.seatId]?.locked" class="sb-lock" title="已锁定" />
+          <template v-if="!s.disabled">
+            <span v-if="showNos" class="sb-no">{{ noOf(s.seatId, s.seatNo) }}</span>
+            <span
+              v-if="fixedSeats?.[s.seatId]"
+              class="sb-lock"
+              aria-label="已固定"
+            >
+              <UiIcon name="lock" :size="12" />
+            </span>
+            <span class="sb-name">{{ seatInfo[s.seatId]?.name || '空位' }}</span>
+            <span v-if="seatInfo[s.seatId]" class="sb-meta">
+              <span v-if="showRank">{{ seatInfo[s.seatId].rankName }}</span>
+              <span v-if="showDuty && seatInfo[s.seatId].duty">{{ seatInfo[s.seatId].duty }}</span>
+              <span v-if="showUnit && seatInfo[s.seatId].unitName">{{ seatInfo[s.seatId].unitName }}</span>
+            </span>
+          </template>
         </button>
       </template>
     </SheetGrid>
@@ -312,11 +335,10 @@ defineExpose({ fitBoard, scrollToSeat })
 .seat-board { position: relative; height: 100%; min-height: 0; display: flex; }
 .seat-board > :deep(.sheet-grid) { flex: 1; }
 
-/* 批量容量模式：空白处可起手框选，光标给出明确反馈 */
-.seat-board.is-capacity :deep(.sg-scroll) { cursor: crosshair; }
-.seat-board.is-capacity :deep(.sg-space) { cursor: crosshair; }
+/* 框选默认可用：空白处保持常规指针，避免画布出现十字光标 */
+.seat-board :deep(.sg-space) { cursor: default; }
 .seat-board.is-marqueeing, .seat-board.is-marqueeing :deep(*) {
-  cursor: crosshair !important;
+  cursor: default !important;
   user-select: none;
 }
 /* 框选矩形：视口坐标绘制在面板根节点上，不受画布缩放影响 */
@@ -360,20 +382,33 @@ defineExpose({ fitBoard, scrollToSeat })
 }
 .sb-seat.is-drag-source { opacity: .38; }
 .sb-seat.is-drag-over { outline: 1.5px dashed var(--primary); outline-offset: -2px; }
-/* 批量容量模式：点选桌位 */
+/* 选区内的座位格：与属性面板联动 */
 .sb-seat.is-cell-picked {
   background: var(--primary-soft);
   box-shadow: inset 0 0 0 2px var(--primary);
-  cursor: copy;
 }
 .sb-seat.is-flash { animation: sb-flash .7s ease; }
-.sb-seat.is-disabled { cursor: default; }
-.sb-seat.is-disabled .sb-name { color: var(--text-disabled); font-weight: 400; }
+/* 不坐人：斜纹由下方 SheetGrid 的禁用格统一绘制，这里只保留可点击 */
+.sb-seat.is-disabled { cursor: pointer; }
+/* 不坐人被选中或框选时不清空斜纹，只加描边 */
+.sb-seat.is-disabled.is-selected,
+.sb-seat.is-disabled.is-cell-picked { background: transparent; }
 
 .sb-no {
   position: absolute; left: 3px; top: 1px;
   font-size: 8px; line-height: 1; color: var(--text-disabled);
   font-variant-numeric: tabular-nums;
+}
+/* 固定座位：右上角小锁，不遮挡座号、姓名与职级 */
+.sb-lock {
+  position: absolute; right: 2px; top: 1px; z-index: 2;
+  display: flex; line-height: 0; color: var(--text-muted); pointer-events: none;
+}
+/* 画布会整体缩放，小锁用实心剪影保证缩小时仍可辨识 */
+.sb-lock :deep(.ico) { fill: currentColor; stroke-width: 1.5; }
+.sb-seat.is-fixed .sb-name { padding-right: 14px; }
+.sb-seat.is-fixed .sb-meta {
+  box-sizing: border-box; padding-right: 14px;
 }
 .sb-name {
   width: 100%; max-width: 100%; box-sizing: border-box;
@@ -390,16 +425,6 @@ defineExpose({ fitBoard, scrollToSeat })
 .sb-meta > span {
   max-width: 100%; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.sb-lock {
-  position: absolute; right: 3px; top: 2px;
-  width: 6px; height: 6px; border-radius: 1px;
-  background: var(--text-secondary);
-}
-.sb-lock::after {
-  content: ''; position: absolute; left: 1px; top: -3px;
-  width: 4px; height: 3px; border: 1px solid var(--text-secondary); border-bottom: none;
-  border-radius: 3px 3px 0 0;
 }
 
 @keyframes sb-flash {

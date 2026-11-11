@@ -11,7 +11,11 @@ export interface ArrangeInput {
   participantIds?: string[]
   /** 人员状态（默认 present） */
   statuses?: Record<string, AttendStatus>
-  keepLocked?: Assignment[]
+  /**
+   * 固定座位：seatId → memberId。
+   * 绑定人员先落座并占位，不再参与其他座位排序；优先级高于区域与职级规则。
+   */
+  fixedSeats?: Record<string, string>
 }
 
 export interface ArrangeResult {
@@ -21,70 +25,58 @@ export interface ArrangeResult {
 }
 
 /**
- * 居中向两侧的座序：1 号居中，2 号在 1 号右手边的画布方向（x+），3 号在左侧，
- * 之后左右交替向外。主席台与台下统一使用这一口径，不因「视角」设置而反转。
- *
- * 偶数个座位时两个中心位的先后由 evenCenterSide 决定：
- * left = 1 号取左中位（2 号紧邻其右侧），right = 1 号取右中位（2 号紧邻其左侧）。
- * 3 号必须落在 1 号的另一侧——双人桌时 1、2 号常同属一张桌子，
- * 若继续向 #2 外侧取座，3 号会跑到 1 号同一侧，编号就乱了。
+ * 编号的统一底层：先定 1 号锚点，再按 firstSide 指定的方向交替向外。
+ * 主席台与台下是两种相反视角，必须由 stageOrder / hallOrder 各自换算后再调用，
+ * 不能把同一个左右参数直接套到两处。
  */
-export function centerOutOrder(seats: SeatRef[], evenCenterSide: 'left' | 'right' = 'left'): SeatRef[] {
+function centerOut(
+  seats: SeatRef[],
+  firstSide: 'left' | 'right',
+  evenCenterSide: 'left' | 'right'
+): SeatRef[] {
   const list = [...seats].sort((a, b) => a.x - b.x)
   const n = list.length
   if (!n) return []
-  const out: SeatRef[] = []
-  let l = 0
-  let r = 0
-  /** 下一座是否先取右侧；3 号始终回到 2 号的对侧 */
-  let rightFirst = true
-  if (n % 2 === 1) {
-    const c = (n - 1) / 2
-    out.push(list[c])
-    l = c - 1
-    r = c + 1
-  } else {
-    const cL = n / 2 - 1
-    const cR = n / 2
-    if (evenCenterSide === 'right') {
-      out.push(list[cR])
-      out.push(list[cL])
-      rightFirst = true
-    } else {
-      out.push(list[cL])
-      out.push(list[cR])
-      rightFirst = false
-    }
-    l = cL - 1
-    r = cR + 1
-  }
-  /**
-   * 每一轮同时向外扩左右各一座，因此奇偶两种起点刚好形成
-   * 右-左-右-左（1 号居中 / 字位在右）与 左-右-左-右（1 号取左中位）的交替。
-   */
+  const pivot = n % 2 === 1 ? (n - 1) / 2 : evenCenterSide === 'right' ? n / 2 : n / 2 - 1
+  const out: SeatRef[] = [list[pivot]]
+  let l = pivot - 1
+  let r = pivot + 1
   while (l >= 0 || r < n) {
-    if (rightFirst) {
-      if (r < n) out.push(list[r++])
+    if (firstSide === 'left') {
       if (l >= 0) out.push(list[l--])
+      if (r < n) out.push(list[r++])
     } else {
-      if (l >= 0) out.push(list[l--])
       if (r < n) out.push(list[r++])
+      if (l >= 0) out.push(list[l--])
     }
   }
   return out
 }
 
-/** 台下横向顺序：center-out 与主席台同口径；左右向模式按画布方向直接取座 */
-export function hallOrder(
+/**
+ * 主席台座序。主席台人员面朝观众（画布下方），他们自己的左手在画布右侧：
+ * 「左为上」= 2 号在画布右侧紧邻 1 号；「右为上」= 镜像，2 号在画布左侧。
+ * 偶数座时 1 号取左中位还是右中位由 evenCenterSide 决定。
+ */
+export function stageOrder(
   seats: SeatRef[],
-  mode: RuleSet['hallOrder'],
-  evenCenterSide: 'left' | 'right' = 'left'
+  side: RuleSet['stageSide'],
+  evenCenterSide: RuleSet['evenCenterSide'] = 'right'
 ): SeatRef[] {
+  return centerOut(seats, side === 'left' ? 'right' : 'left', evenCenterSide)
+}
+
+/**
+ * 台下座序。台下是观众视角，画布左侧就是观众左手：
+ * 「中间左优先」= 2 号紧邻 1 号左侧，「中间右优先」= 2 号紧邻右侧，之后交替向外。
+ * 偶数座时 1 号取两个中位里偏左的一个，保证「2 号紧邻 1 号」连续。
+ */
+export function hallOrder(seats: SeatRef[], mode: RuleSet['hallOrder']): SeatRef[] {
   const list = [...seats].sort((a, b) => a.x - b.x)
   if (!list.length) return []
   if (mode === 'left-to-right') return list
   if (mode === 'right-to-left') return [...list].reverse()
-  return centerOutOrder(list, evenCenterSide)
+  return centerOut(list, mode === 'center-right' ? 'right' : 'left', 'left')
 }
 
 function unitPathOrder(roster: RosterPlan): Map<string, number[]> {
@@ -115,6 +107,8 @@ function sortCandidates(members: Member[], roster: RosterPlan, rules: RuleSet): 
   const rankOrder = new Map(roster.ranks.map((r) => [r.id, r.order]))
   const upath = unitPathOrder(roster)
   const listIdx = new Map(roster.members.map((m, i) => [m.id, i]))
+  /** 名册顺序优先取显式 order，旧数据回落到数组位置 */
+  const seq = (m: Member): number => m.order ?? listIdx.get(m.id) ?? 0
   const base = [...members].sort((a, b) => {
     const ra = rankOrder.get(a.rankId) ?? 999
     const rb = rankOrder.get(b.rankId) ?? 999
@@ -123,7 +117,7 @@ function sortCandidates(members: Member[], roster: RosterPlan, rules: RuleSet): 
     const pb = upath.get(b.unitId) ?? []
     const c = cmpPath(pa, pb)
     if (c !== 0) return c
-    return (listIdx.get(a.id) ?? 0) - (listIdx.get(b.id) ?? 0)
+    return seq(a) - seq(b)
   })
   if (rules.unitOrder === 'continuous' || !rules.keepListOrder) return base
 
@@ -220,11 +214,17 @@ export function seatOrderMap(layout: LayoutPackage, rules: RuleSet): Map<string,
     const seats = seatsInRow(layout.sheet, row).filter((s) => !s.disabled)
     if (!seats.length) continue
     const ordered = seats[0].stage
-      ? centerOutOrder(seats, rules.evenCenterSide)
-      : hallOrder(seats, rules.hallOrder, rules.evenCenterSide)
+      ? stageOrder(seats, rules.stageSide, rules.evenCenterSide)
+      : hallOrder(seats, rules.hallOrder)
     ordered.forEach((s, i) => out.set(s.seatId, i + 1))
   }
   return out
+}
+
+/** 固定座位提示用的座位名：主席台 / 第 N 排第 M 座 */
+function seatText(seat: SeatRef | undefined): string {
+  if (!seat) return '未知座位'
+  return seat.stage ? `主席台第 ${seat.index} 座` : `第 ${seat.row + 1} 排第 ${seat.seatNo || seat.index} 座`
 }
 
 export function arrange(input: ArrangeInput): ArrangeResult {
@@ -253,34 +253,71 @@ export function arrange(input: ArrangeInput): ArrangeResult {
   const stageSeats = usable.filter((s) => s.stage)
   const hallSeats = usable.filter((s) => !s.stage)
 
-  // 锁定的分配优先落位；请假者不占座，任何状态下都不保留其座位
-  const locked = (input.keepLocked ?? []).filter((a) => {
-    if (!allSeats.some((s) => s.seatId === a.seatId)) return false
-    const member = memberById.get(a.memberId)
-    if (!member || member.status === 'leave') return false
-    return !!a.locked
-  })
-  const lockedSeatIds = new Set<string>()
-  const lockedMemberIds = new Set<string>()
   const assignments: Assignment[] = []
-  for (const a of locked) {
-    if (lockedSeatIds.has(a.seatId) || lockedMemberIds.has(a.memberId)) continue
-    lockedSeatIds.add(a.seatId)
-    lockedMemberIds.add(a.memberId)
-    assignments.push({ ...a, status: statuses[a.memberId] ?? a.status })
+  const seatIndex = new Map(allSeats.map((s) => [s.seatId, s]))
+  const seatSeq = new Map(allSeats.map((s, i) => [s.seatId, i]))
+  const used = new Set<string>()
+  const seatToAssignment = new Map<string, Assignment>()
+  const fixedMemberSeat = new Map<string, string>()
+
+  // 固定座位优先级最高：先落位并占座，这批人随后从候选池剔除。
+  // 按座位在布局中的先后处理，保证「同一人被绑多个座位」时的取舍是确定的。
+  const fixedEntries = Object.entries(input.fixedSeats ?? {})
+    .filter(([, memberId]) => !!memberId)
+    .sort((a, b) => (seatSeq.get(a[0]) ?? 1e9) - (seatSeq.get(b[0]) ?? 1e9))
+  for (const [seatId, memberId] of fixedEntries) {
+    const seat = seatIndex.get(seatId)
+    const m = memberById.get(memberId)
+    if (!seat) {
+      warnings.push('固定座位已不存在，对应绑定已失效；请在座位详情中重新指定')
+      continue
+    }
+    const label = seatText(seat)
+    if (!m) {
+      warnings.push(`固定座位「${label}」引用的人员不在名册中，绑定已失效`)
+      continue
+    }
+    const st = statuses[m.id] ?? m.status
+    if (st === 'leave') {
+      warnings.push(`「${m.name}」已请假，固定座位「${label}」本次未安排`)
+      continue
+    }
+    if (!participants.includes(m.id)) {
+      warnings.push(`「${m.name}」不在本次排座名单，固定座位「${label}」未生效`)
+      continue
+    }
+    if (seat.disabled) {
+      warnings.push(`固定座位「${label}」本次不坐人，「${m.name}」将按规则参与其他座位排序`)
+      continue
+    }
+    const prev = fixedMemberSeat.get(m.id)
+    if (prev) {
+      warnings.push(
+        `「${m.name}」被固定到多个座位（「${seatText(seatIndex.get(prev))}」与「${label}」），仅保留前者`
+      )
+      continue
+    }
+    if (!pool.some((p) => p.id === m.id)) continue
+    const a: Assignment = { seatId, memberId: m.id, status: st }
+    assignments.push(a)
+    used.add(m.id)
+    seatToAssignment.set(seatId, a)
+    fixedMemberSeat.set(m.id, seatId)
   }
-  const remainingPool = sortCandidates(pool.filter((m) => !lockedMemberIds.has(m.id)), roster, rules)
+
+  const remainingPool = sortCandidates(
+    pool.filter((m) => !used.has(m.id)),
+    roster,
+    rules
+  )
 
   // 主席台：按行分组，每行按主席台顺序逐座落位
   const stageQueue: SeatRef[] = []
   const stageRows = new Set(stageSeats.map((s) => s.row))
   for (const row of [...stageRows].sort((a, b) => a - b)) {
-    const rowSeats = stageSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId))
-    stageQueue.push(...centerOutOrder(rowSeats, rules.evenCenterSide))
+    const rowSeats = stageSeats.filter((s) => s.row === row)
+    stageQueue.push(...stageOrder(rowSeats, rules.stageSide, rules.evenCenterSide))
   }
-
-  const used = new Set<string>(lockedMemberIds)
-  const seatToAssignment = new Map(assignments.map((a) => [a.seatId, a]))
 
   const takeFor = (seat: SeatRef, allow: SeatAllow | null): Member | null => {
     if (seatToAssignment.has(seat.seatId) || seat.disabled) return null
@@ -296,8 +333,7 @@ export function arrange(input: ArrangeInput): ArrangeResult {
     const a: Assignment = {
       seatId: seat.seatId,
       memberId: m.id,
-      status: statuses[m.id] ?? 'present',
-      locked: false
+      status: statuses[m.id] ?? 'present'
     }
     assignments.push(a)
     seatToAssignment.set(seat.seatId, a)
@@ -322,8 +358,9 @@ export function arrange(input: ArrangeInput): ArrangeResult {
     const stageRowsSorted = [...new Set(stageSeats.map((s) => s.row))].sort((a, b) => a - b)
     for (const row of stageRowsSorted) {
       orderedSeats.push(
-        ...centerOutOrder(
-          stageSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId)),
+        ...stageOrder(
+          stageSeats.filter((s) => s.row === row),
+          rules.stageSide,
           rules.evenCenterSide
         )
       )
@@ -332,14 +369,28 @@ export function arrange(input: ArrangeInput): ArrangeResult {
     for (const row of hallRowsSorted) {
       orderedSeats.push(
         ...hallOrder(
-          hallSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId)),
-          rules.hallOrder,
-          rules.evenCenterSide
+          hallSeats.filter((s) => s.row === row),
+          rules.hallOrder
         )
       )
     }
-    for (const [memberId, zones] of manualZones) {
+    /** 区域总座位数与当前剩余空位，用于给出准确提示 */
+    const zoneTotal = (zoneId: string): number => usable.filter((s) => s.zoneId === zoneId).length
+    const zoneFree = (zoneId: string): number =>
+      orderedSeats.filter((s) => s.zoneId === zoneId && !seatToAssignment.has(s.seatId)).length
+    // 区域指定人员之间也要遵守排座顺序（职级 → 单位 → 名册序），
+    // 不能按 rules.zoneRules.memberIds 的存储顺序落位，否则会绕过名册拖拽顺序
+    const candidatePos = new Map(remainingPool.map((m, i) => [m.id, i]))
+    const manualIds = [...manualZones.keys()].sort(
+      (a, b) => (candidatePos.get(a) ?? 1e9) - (candidatePos.get(b) ?? 1e9)
+    )
+    for (const memberId of manualIds) {
+      const zones = manualZones.get(memberId)!
       const m = memberById.get(memberId)
+      if (fixedMemberSeat.has(memberId)) {
+        if (m) warnings.push(`「${m.name}」同时被固定座位与区域指定，按固定座位落位`)
+        continue
+      }
       if (!m || used.has(m.id)) continue
       const target = [...new Set(zones)]
       if (target.length > 1) {
@@ -350,16 +401,21 @@ export function arrange(input: ArrangeInput): ArrangeResult {
         continue
       }
       const zoneId = target[0]
+      const name = zoneName.get(zoneId) ?? zoneId
       const seat = orderedSeats.find((s) => s.zoneId === zoneId && !seatToAssignment.has(s.seatId))
       if (!seat) {
-        warnings.push(`区域「${zoneName.get(zoneId) ?? zoneId}」座位不足，未能安排「${m.name}」`)
+        const total = zoneTotal(zoneId)
+        warnings.push(
+          total
+            ? `区域「${name}」座位不足：仅剩 ${zoneFree(zoneId)} 个空位（共 ${total} 座），未能安排「${m.name}」`
+            : `区域「${name}」没有任何座位，未能安排「${m.name}」；请在布局中把座位分配到这个区域`
+        )
         continue
       }
       const a: Assignment = {
         seatId: seat.seatId,
         memberId: m.id,
-        status: statuses[m.id] ?? 'present',
-        locked: false
+        status: statuses[m.id] ?? 'present'
       }
       assignments.push(a)
       seatToAssignment.set(seat.seatId, a)
@@ -367,10 +423,14 @@ export function arrange(input: ArrangeInput): ArrangeResult {
     }
   }
 
-  // 规则自检：级别规则没匹配到人、区域规则与分层规则重叠
+  // 规则自检：级别规则没匹配到人、区域规则与分层规则重叠、区域没有座位
   for (const z of layout.zones ?? []) {
     const allow = zoneAllowFor(z.id, rules)
     if (!allow) continue
+    if (!usable.some((s) => s.zoneId === z.id)) {
+      warnings.push(`区域「${z.name}」没有可排座位，级别规则未生效；请在布局中把座位分配到这个区域`)
+      continue
+    }
     if (allow.ranks) {
       const hit = pool.filter((m) => allow.ranks!.includes(m.rankId) && !allow.exclude.has(m.rankId))
       if (!hit.length) warnings.push(`区域「${z.name}」的级别规则没有匹配到可排人员`)
@@ -392,8 +452,8 @@ export function arrange(input: ArrangeInput): ArrangeResult {
   // 台下：按排从上到下，排号直接取格子行号 + 1
   const hallRows = new Set(hallSeats.map((s) => s.row))
   for (const row of [...hallRows].sort((a, b) => a - b)) {
-    const rowSeats = hallSeats.filter((s) => s.row === row && !lockedSeatIds.has(s.seatId))
-    const ordered = hallOrder(rowSeats, rules.hallOrder, rules.evenCenterSide)
+    const rowSeats = hallSeats.filter((s) => s.row === row)
+    const ordered = hallOrder(rowSeats, rules.hallOrder)
     for (const seat of ordered) {
       takeFor(seat, allowForSeat(seat, row + 1, rules))
     }
@@ -428,7 +488,7 @@ export function applyRulesToProject(project: Project, roster: RosterPlan, layout
     layout,
     rules: project.ruleSet,
     statuses,
-    keepLocked: project.assignments,
+    fixedSeats: project.seatOverlay?.fixedSeats,
     participantIds: project.participantIds.length
       ? project.participantIds
       : roster.members.filter((m) => m.status === 'present').map((m) => m.id)

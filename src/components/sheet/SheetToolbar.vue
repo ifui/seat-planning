@@ -4,6 +4,7 @@ import ElementLibrary from './ElementLibrary.vue'
 import UiButton from '../../ui/components/UiButton.vue'
 import UiDropdown from '../../ui/components/UiDropdown.vue'
 import UiIconButton from '../../ui/components/UiIconButton.vue'
+import UiColorPicker from '../../ui/components/UiColorPicker.vue'
 
 defineProps<{
   canUndo: boolean
@@ -29,7 +30,6 @@ const lineStyles: { value: 'solid' | 'dashed' | 'dotted'; label: string }[] = [
   { value: 'dashed', label: '虚线' },
   { value: 'dotted', label: '点线' }
 ]
-const lineColors = ['#333333', '#111111', '#7a8b8a', '#4a7c7b', '#c08a3e', '#b4483f', '#3d6fa8']
 
 const emit = defineEmits<{
   (e: 'back'): void
@@ -39,10 +39,6 @@ const emit = defineEmits<{
   (e: 'import'): void
   (e: 'undo'): void
   (e: 'redo'): void
-  (e: 'insert-row'): void
-  (e: 'delete-row'): void
-  (e: 'insert-col'): void
-  (e: 'delete-col'): void
   (e: 'merge'): void
   (e: 'unmerge'): void
   (e: 'type', kind: 'seat' | 'podium' | 'block', role?: 'aisle'): void
@@ -74,13 +70,6 @@ const emit = defineEmits<{
     </div>
 
     <div class="st-row st-row-sub">
-      <span class="st-group-label">行列</span>
-      <UiButton variant="ghost" size="sm" icon="plus" title="在上方插入行" @click="emit('insert-row')">行</UiButton>
-      <UiButton variant="ghost" size="sm" icon="minus" title="删除选中行" @click="emit('delete-row')">行</UiButton>
-      <UiButton variant="ghost" size="sm" icon="plus" title="在左侧插入列" @click="emit('insert-col')">列</UiButton>
-      <UiButton variant="ghost" size="sm" icon="minus" title="删除选中列" @click="emit('delete-col')">列</UiButton>
-
-      <span class="st-divider" />
       <span class="st-group-label">合并</span>
       <UiButton variant="ghost" size="sm" icon="square" @click="emit('merge')">合并</UiButton>
       <UiButton variant="ghost" size="sm" icon="expand" @click="emit('unmerge')">拆分</UiButton>
@@ -147,19 +136,11 @@ const emit = defineEmits<{
 
             <div class="bd-title">线色</div>
             <div class="bd-colors">
-              <button
-                v-for="c in lineColors"
-                :key="c"
-                type="button"
-                class="bd-dot"
-                :class="{ 'is-on': borderColor.toLowerCase() === c }"
-                :style="{ background: c }"
-                :title="c"
-                @click="emit('update:borderColor', c)"
+              <UiColorPicker
+                :model-value="borderColor"
+                custom-label="自定义线色"
+                @update:model-value="emit('update:borderColor', $event)"
               />
-              <label class="bd-custom" title="自定义线色">
-                <input type="color" :value="borderColor" @change="emit('update:borderColor', ($event.target as HTMLInputElement).value)" />
-              </label>
             </div>
           </div>
         </template>
@@ -208,16 +189,5 @@ const emit = defineEmits<{
 .bd-chip.is-danger { color: var(--danger); }
 .bd-chip.is-danger:hover { background: var(--danger-soft); border-color: var(--danger-line); }
 .bd-sep { height: 1px; margin: 6px 8px; background: var(--border-soft); }
-.bd-colors { display: flex; align-items: center; gap: 6px; padding: 2px 8px 0; }
-.bd-dot {
-  width: 16px; height: 16px; padding: 0; border-radius: 50%; cursor: pointer;
-  border: 1px solid rgba(0, 0, 0, 0.14);
-}
-.bd-dot.is-on { box-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 3px var(--primary); }
-.bd-custom {
-  width: 18px; height: 18px; margin-left: 2px; overflow: hidden;
-  display: grid; place-items: center; cursor: pointer;
-  border: 1px dashed var(--border-strong); border-radius: 50%;
-}
-.bd-custom input { width: 26px; height: 26px; padding: 0; border: 0; background: none; cursor: pointer; }
+.bd-colors { padding: 2px 8px 0; }
 </style>

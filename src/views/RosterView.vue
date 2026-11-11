@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Member, RankDef, RosterPlan, UnitNode } from '../types'
 import { removeRoster, saveRoster, state } from '../store'
 import { nowISO, uid } from '../engine/sheet'
-import { UiChart, UiIcon, UiIconButton, UiSelect, UiModal } from '../ui'
+import { UiChart, UiIcon, UiIconButton, UiSelect, UiModal, COLOR_PRESETS } from '../ui'
 import { chartAxisText, chartColors, chartFont, chartTooltip, type ChartOption } from '../ui/charts'
 import ImportDialog from '../components/roster/ImportDialog.vue'
 
@@ -368,6 +368,11 @@ function clearFilters(): void {
 const dragId = ref<string | null>(null)
 const dropTarget = ref<{ id: string; after: boolean } | null>(null)
 
+/** 增删或拖拽后把 order 重编为连续序号，排座直接读取这个顺序 */
+function reindexMembers(): void {
+  draft.value?.members.forEach((m, i) => { m.order = i })
+}
+
 function onDragStart(id: string, e: DragEvent): void {
   if (hasFilter.value) { e.preventDefault(); return }
   dragId.value = id
@@ -395,7 +400,8 @@ function onDrop(): void {
   if (to < 0) to = draft.value.members.length
   else if (target.after) to += 1
   draft.value.members.splice(to, 0, moved)
-  flash(`已调整「${moved.name}」的顺序，记得保存`)
+  reindexMembers()
+  flash(`已调整「${moved.name}」的顺序`)
   onDragEnd()
 }
 
@@ -449,15 +455,17 @@ function submitMember(): void {
     draft.value.members.push({
       id: uid('m'), name: f.name.trim(), unitId: f.unitId, rankId: f.rankId, duty, aliases, status: 'present'
     })
+    reindexMembers()
     flash('人员已添加，记得保存')
   }
   memberOpen.value = false
 }
 
 function askDeleteMember(m: Member): void {
-  ask('移除人员', `确定从名册中移除「${m.name}」？已排座项目保留自己的名册快照，不会自动变动；需要时可在项目里「手动更新」。`, () => {
+  ask('移除人员', `确定从名册中移除「${m.name}」？已排座项目不受影响。`, () => {
     if (!draft.value) return
     draft.value.members = draft.value.members.filter((x) => x.id !== m.id)
+    reindexMembers()
   })
 }
 
@@ -489,12 +497,14 @@ function submitBatch(): void {
     })
   }
   batchOpen.value = false
+  reindexMembers()
   flash(`已加入 ${names.length} 人，记得保存`)
 }
 
 // ---- 文件批量导入 ----
 const importOpen = ref(false)
-const RANK_PALETTE = ['#3D5A6C', '#4A7C7B', '#6B8E8D', '#8C6A5D', '#7A7194', '#A08355', '#5F7D5A', '#9A6A6A']
+/** 新增职级的默认色轮：取统一预设里的非浅色项，避免职级色条过淡 */
+const RANK_PALETTE = COLOR_PRESETS.slice(1)
 
 const unitNames = computed(() => [...new Set((draft.value?.units ?? []).map((u) => u.name))])
 const rankNames = computed(() => sortedRanks.value.map((r) => r.name))
@@ -566,6 +576,7 @@ async function handleImport(payload: {
   }
   newUnits = d.units.length - unitsBefore
   newRanks = d.ranks.length - ranksBefore
+  reindexMembers()
   await saveRoster(d)
   dirty.value = false
   const extras = [
@@ -581,7 +592,6 @@ async function handleImport(payload: {
     <div class="page-head-main">
       <div class="page-eyebrow">名册与组织</div>
       <h1 class="page-title">{{ draft?.name ?? '名册方案' }}</h1>
-      <p class="page-desc">职级决定排座优先级；同职级内按单位编制序列与名册顺序安排，名册顺序可直接拖拽调整。职务仅用于展示与筛选，不参与排序。</p>
     </div>
     <div class="head-actions roster-head-actions">
       <div class="roster-plan">
@@ -591,7 +601,7 @@ async function handleImport(payload: {
         <UiIconButton icon="edit" :size="15" title="重命名方案" @click="openRename" />
       </div>
       <span class="roster-head-sep" aria-hidden="true" />
-      <button class="btn sm" @click="createPlan">新建方案</button>
+      <UiIconButton icon="plus" :size="15" title="新建方案" aria-label="新建方案" @click="createPlan" />
       <UiIconButton icon="trash" :size="15" title="删除当前方案" danger @click="askDeletePlan" />
       <button class="btn sm primary" :disabled="!dirty" @click="save">{{ dirty ? '保存改动' : '已保存' }}</button>
     </div>
@@ -600,7 +610,6 @@ async function handleImport(payload: {
   <div v-if="!draft" class="roster-blank">
     <UiIcon name="users" :size="24" />
     <div class="roster-blank-title">还没有名册方案</div>
-    <p>新建一套名册，配置职级与单位后即可开始排座。</p>
     <button class="btn sm primary" @click="createPlan">新建方案</button>
   </div>
 
@@ -610,7 +619,6 @@ async function handleImport(payload: {
         <div class="roster-panel-head">
           <div class="roster-panel-heading">
             <h2 class="roster-panel-title">人员名册</h2>
-            <span class="roster-panel-note">名册只维护人员基础数据</span>
           </div>
           <div class="roster-panel-actions">
             <button class="btn sm" @click="openImport"><UiIcon name="import" :size="13" />批量导入</button>
@@ -709,7 +717,7 @@ async function handleImport(payload: {
           <div v-if="!visibleMembers.length" class="roster-empty">
             <UiIcon :name="hasFilter ? 'search' : 'users'" :size="22" />
             <div class="roster-empty-title">{{ hasFilter ? '没有匹配的人员' : '名册里还没有人员' }}</div>
-            <p class="roster-empty-desc">{{ hasFilter ? '换个关键字，或清除单位、职级筛选后再试。' : '可以逐个新增，也可以把姓名批量粘贴进来。' }}</p>
+            <p v-if="hasFilter" class="roster-empty-desc">换个关键字，或清除筛选后再试。</p>
             <div class="roster-empty-actions">
               <button v-if="hasFilter" class="btn sm" @click="clearFilters">清除筛选</button>
               <template v-else>
@@ -723,7 +731,6 @@ async function handleImport(payload: {
 
         <div class="roster-foot">
           <span>共 <b>{{ draft.members.length }}</b> 人</span>
-          <span>改动先留在本地草稿，保存后写入本机数据库</span>
         </div>
       </section>
 
@@ -733,7 +740,7 @@ async function handleImport(payload: {
           <button class="roster-org-row" @click="draft && emit('open-ranks', draft.id)">
             <div class="grow">
               <div class="roster-org-name">职级序列</div>
-              <div class="roster-org-meta">{{ draft.ranks.length }} 个职级 · 决定排座优先级</div>
+              <div class="roster-org-meta">{{ draft.ranks.length }} 个职级</div>
             </div>
             <span class="tag ink">{{ draft.members.length }} 人</span>
             <UiIcon name="chevronRight" :size="12" class="chev" />
@@ -741,7 +748,7 @@ async function handleImport(payload: {
           <button class="roster-org-row" @click="draft && emit('open-units', draft.id)">
             <div class="grow">
               <div class="roster-org-name">单位编制序列</div>
-              <div class="roster-org-meta">{{ draft.units.length }} 个单位 · 多层有序树</div>
+              <div class="roster-org-meta">{{ draft.units.length }} 个单位</div>
             </div>
             <UiIcon name="chevronRight" :size="12" class="chev" />
           </button>
@@ -767,17 +774,12 @@ async function handleImport(payload: {
             <UiChart :option="unitChart" :height="unitChartHeight" empty-text="暂无单位数据" />
           </div>
         </section>
-
-        <section class="card tight">
-          <div class="card-title" style="margin-bottom: 8px">提示</div>
-          <div class="caption">Excel 导入与人员信息在名册维护；出勤状态与座位分配在「排座项目」里完成。</div>
-        </section>
       </div>
     </div>
   </template>
 
   <!-- 重命名 -->
-  <UiModal v-model="renameOpen" title="重命名名册方案" description="名称用于在项目里选择引用">
+  <UiModal v-model="renameOpen" title="重命名名册方案">
     <div class="field">
       <label>方案名称</label>
       <input v-model="renameValue" class="input" placeholder="如：名册方案一" @keyup.enter="confirmRename" />
@@ -792,7 +794,6 @@ async function handleImport(payload: {
   <UiModal
     v-model="memberOpen"
     :title="editingId ? '编辑人员' : '新增人员'"
-    description="职级决定排座优先级；名册顺序可拖拽调整，职务仅用于展示与筛选"
   >
     <div class="field">
       <label>姓名</label>
@@ -809,7 +810,7 @@ async function handleImport(payload: {
       </div>
     </div>
     <div class="field">
-      <label>职务（可留空，仅展示与筛选，不参与排序）</label>
+      <label>职务（可留空）</label>
       <input v-model="form.duty" class="input" placeholder="如：主任、处长、副主任" />
     </div>
     <div class="field">

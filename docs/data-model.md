@@ -62,6 +62,7 @@ export interface Member {
   gender?: 'M' | 'F'
   note?: string
   status: 'present' | 'leave' // 请假者不参与排座、不占座
+  order?: number         // 名册顺序（拖拽排序），排座时同职级同单位内的最终依据
 }
 
 export interface RosterPlan {
@@ -82,6 +83,7 @@ export interface RosterPlan {
 | `Member.aliases` | Excel 导入时按姓名/别名匹配已有人员 |
 | `Member.duty` | 职务（如主任、处长），导入时按「职务/职位/岗位」列识别；仅用于展示与筛选，不参与排序 |
 | `RosterPlan.members` 顺序 | 完全由用户拖拽决定，不做自动排序；作为排座时同职级同单位内的先后依据 |
+| `Member.order` | 名册顺序的持久化排序键：拖拽、增删后统一重编为 `0..n-1`；旧数据没有该字段时按数组位置迁移，刷新、快照与排座读到的是同一顺序 |
 | `UnitNode.parentId` | `null` 为根；单位树用于展示与筛选，排座按 `unitId` 分组 |
 
 ---
@@ -211,8 +213,9 @@ export interface ZoneRule {
 }
 
 export interface RuleSet {
-  evenCenterSide: 'left' | 'right'
-  hallOrder: 'center-out' | 'left-to-right' | 'right-to-left'
+  stageSide: 'left' | 'right'          // 主席台：左为上 / 右为上（就座者视角，2 号在画布右/左侧）
+  evenCenterSide: 'left' | 'right'     // 主席台偶数座时 1 号取左中位还是右中位
+  hallOrder: 'center-left' | 'center-right' | 'left-to-right' | 'right-to-left'
   unitOrder: 'continuous' | 'interleave'
   tiers: TierRule[]
   zoneRules: ZoneRule[]
@@ -223,8 +226,20 @@ export interface Assignment {
   seatId: string
   memberId: string
   status: AttendStatus
-  locked: boolean
   note?: string
+}
+
+export interface ProjectSeatOverlay {
+  // 项目内区域定义，只对当前项目生效
+  zones: ZoneDef[]
+  // 本次会议停用的单元格（anchor seat id）
+  disabledCells: string[]
+  // 单元格 → 区域（anchor seat id → zoneId）
+  cellZones: Record<string, string>
+  // 固定座位：seatId → memberId；绑定人员不参与其他座位排序
+  fixedSeats?: Record<string, string>
+  layoutPackageId?: string
+  layoutUpdatedAt?: string
 }
 
 export interface Project {
@@ -239,6 +254,10 @@ export interface Project {
   participantIds: string[]
   unassigned: string[]
   pendingNames: string[]
+  // 本项目的桌容量覆盖："行:列" → 每桌人数
+  seatCapacity?: Record<string, number>
+  // 项目对布局的覆盖层：区域 + 本次停用 + 单元格归属
+  seatOverlay?: ProjectSeatOverlay
   status: 'draft' | 'seated'
   createdAt: string
   updatedAt: string
@@ -253,8 +272,9 @@ export interface Snapshot {
 }
 
 export const DEFAULT_RULESET: RuleSet = {
-  evenCenterSide: 'left',
-  hallOrder: 'center-out',
+  stageSide: 'left',
+  evenCenterSide: 'right',
+  hallOrder: 'center-left',
   unitOrder: 'continuous',
   tiers: [],
   zoneRules: [],
@@ -270,7 +290,9 @@ export const DEFAULT_RULESET: RuleSet = {
 | `status` | `draft` 未排座 / `seated` 已排座 |
 | `Assignment.status` | `present` 在位、`absent` 缺席、`guest` 来宾；请假是人员状态，不再写入分配 |
 | `Member.status` | `present` 在位、`leave` 请假；排座、统计与右侧请假 tab 均以此为准 |
-| `Assignment.locked` | 锁定后重新排座仍保留（座位仍存在时） |
+| `seatCapacity` | 项目级桌容量覆盖，键为 `"行:列"`；与布局原件分离 |
+| `seatOverlay` | 项目对布局的覆盖层：`zones` 项目独立区域、`disabledCells` 本次停用、`cellZones` 单元格归属、`fixedSeats` 固定座位；前两者与 `cellZones` 的键为单元格 anchor（该格第一个座位 id），`fixedSeats` 的键为单个 `seatId`（双人桌可分别固定） |
+| `fixedSeats` | 固定座位绑定：`seatId → memberId`。只属于当前项目，不写回名册与布局；重新排座保持不变，座位槽被删除时清理并提示 |
 | `Snapshot.label` | 当前固定写入「排座前快照」（`ProjectView.vue` 的 `runArrange()`） |
 
 规则字段的**行为口径**见 [seating-rules.md](./seating-rules.md)。
@@ -350,15 +372,16 @@ export const DEFAULT_RULESET: RuleSet = {
   "rosterPlanId": "roster-demo",
   "layoutPackageId": "layout-demo",
   "ruleSet": {
-    "evenCenterSide": "left",
-    "hallOrder": "center-out",
+    "stageSide": "left",
+    "evenCenterSide": "right",
+    "hallOrder": "center-left",
     "unitOrder": "continuous",
     "tiers": [],
     "zoneRules": [],
     "keepListOrder": true
   },
   "assignments": [
-    { "seatId": "seat-0-1-1", "memberId": "m-1", "status": "present", "locked": false }
+    { "seatId": "seat-0-1-1", "memberId": "m-1", "status": "present" }
   ],
   "participantIds": [],
   "unassigned": [],

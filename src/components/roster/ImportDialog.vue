@@ -156,7 +156,6 @@ function submit(): void {
   <UiModal
     v-model="open"
     title="批量导入人员"
-    description="支持 Excel、Word（.docx）、CSV 与分隔文本。先自动识别人名列与字段，再人工校对后导入。"
     width="920px"
   >
     <div v-if="!table" class="imp-start">
@@ -181,9 +180,8 @@ function submit(): void {
       />
       <div v-if="error" class="imp-alert error">{{ error }}</div>
       <ul class="imp-tips">
-        <li>姓名列可识别「张三」「张三（班长）」「张三 男」「1.张三」「张三-办公室」「张三 137xxxx」等格式。</li>
-        <li>表头含姓名、性别、单位、职级、职务、备注时自动映射，也可以在预览里改选列。职务仅用于展示与筛选，不影响排序。</li>
         <li>旧版 .doc 请先另存为 .docx；CSV 支持 UTF-8 与 GBK 编码。</li>
+        <li>自动识别的列可在预览里改选。</li>
       </ul>
     </div>
 

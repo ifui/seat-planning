@@ -13,7 +13,6 @@ const emit = defineEmits<{ (e: 'add', kind: ElementKind): void }>()
   <div class="el-lib">
     <div class="el-lib-head">
       <span class="el-lib-title">添加元素</span>
-      <span class="el-lib-hint">插入后浮于单元格，可自由拖动、缩放与旋转</span>
     </div>
     <div class="el-lib-grid">
       <button

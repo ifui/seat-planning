@@ -30,6 +30,8 @@ export interface Member {
   gender?: 'M' | 'F'
   note?: string
   status: MemberStatus
+  /** 名册顺序（拖拽排序）：排座时同一职级、同一单位内的最终依据 */
+  order?: number
 }
 
 export interface RosterPlan {
@@ -81,7 +83,7 @@ export interface SheetCell {
   seats?: number
   /** 每个座位一个稳定 id，长度 = seats；排座分配按它引用，插删行列不会错位 */
   seatIds?: string[]
-  /** 固定空位（保留但不能坐人） */
+  /** 不坐人（保留位置但不能坐人） */
   disabled?: boolean
   /** 同桌编组：相邻同 tableId 的座位格绘制成连续桌带 */
   tableId?: string
@@ -255,10 +257,12 @@ export interface TierRule {
 }
 
 export interface RuleSet {
-  /** 偶数座时 1 号取左中位还是右中位；2 号始终紧邻 1 号，3 号在另一侧 */
+  /** 主席台朝向口径：left = 左为上（2 号在画布右侧），right = 右为上（镜像） */
+  stageSide: 'left' | 'right'
+  /** 主席台偶数座时 1 号取左中位还是右中位 */
   evenCenterSide: 'left' | 'right'
-  /** 台下横向填充方向 */
-  hallOrder: 'center-out' | 'left-to-right' | 'right-to-left'
+  /** 台下填充方向：中间左优先 / 中间右优先 / 从左到右 / 从右到左 */
+  hallOrder: 'center-left' | 'center-right' | 'left-to-right' | 'right-to-left'
   /** 单位在座位上的分布：连续 / 交替穿插 */
   unitOrder: 'continuous' | 'interleave'
   /** 每排/区域职级分层 */
@@ -289,8 +293,34 @@ export interface Assignment {
   seatId: string
   memberId: string
   status: AttendStatus
-  locked: boolean
   note?: string
+}
+
+/**
+ * 项目对布局的覆盖层：同一份布局可以被多个会议复用，但「本次会议停用哪些座位」
+ * 与「本次会议怎么分区」只属于当前项目，全部存在这里，不写回布局。
+ *
+ * 引用键统一使用「单元格第一个座位的稳定 id」（anchor seat id）：
+ * 插入/删除行列时座位 id 随单元格移动，引用不会像 "行:列" 那样错位；
+ * 单元格被删除或不再是座位时，引用在下次加载时清理并提示。
+ */
+export interface ProjectSeatOverlay {
+  /** 项目内区域定义，只对当前项目生效 */
+  zones: ZoneDef[]
+  /** 本次会议停用的单元格（anchor seat id） */
+  disabledCells: string[]
+  /** 单元格 → 区域（anchor seat id → zoneId） */
+  cellZones: Record<string, string>
+  /**
+   * 固定座位：seatId → memberId。
+   * 指定某个位置固定给某人，该人不参与其他座位的排序。
+   * 与 disabledCells / cellZones 不同，这里按「座位」记录而不是单元格锚点：
+   * 同一桌的多个座位可以分别固定给不同的人；seatId 随插删行列稳定移动。
+   */
+  fixedSeats?: Record<string, string>
+  /** 上次对齐的布局，用于识别布局被编辑或切换 */
+  layoutPackageId?: string
+  layoutUpdatedAt?: string
 }
 
 export interface Project {
@@ -317,6 +347,8 @@ export interface Project {
    * 缺省沿用布局里的旧 seats 字段；布局页不再提供容量设置。
    */
   seatCapacity?: Record<string, number>
+  /** 项目对布局的覆盖层：本次会议的区域与停用座位 */
+  seatOverlay?: ProjectSeatOverlay
   assignments: Assignment[]
   participantIds: string[]
   unassigned: string[]
@@ -335,8 +367,9 @@ export interface Snapshot {
 }
 
 export const DEFAULT_RULESET: RuleSet = {
-  evenCenterSide: 'left',
-  hallOrder: 'center-out',
+  stageSide: 'left',
+  evenCenterSide: 'right',
+  hallOrder: 'center-left',
   unitOrder: 'continuous',
   tiers: [],
   zoneRules: [],

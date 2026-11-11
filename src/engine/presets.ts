@@ -1,4 +1,4 @@
-import type { LayoutPackage, LayoutPreset, SheetCell, ZoneDef } from '../types'
+import type { LayoutPackage, LayoutPreset, SheetCell } from '../types'
 import { createSheet, ensureSeatIds, keyOf, nowISO, uid } from './sheet'
 
 function buildTemplate(opts: {
@@ -11,11 +11,6 @@ function buildTemplate(opts: {
   const { name, rows, cols, podiumCols } = opts
   const sheet = createSheet({ rows, cols, colWidth: 108, rowHeight: 58, originX: 40, originY: 40 })
   sheet.rowHeights[0] = 68
-  const zones: ZoneDef[] = [
-    { id: 'zone-stage', name: '主席台', color: '#DCE9EA', ruleTag: 'podium' },
-    { id: 'zone-front', name: '前排', color: '#E6F0EF', ruleTag: 'vip' },
-    { id: 'zone-hall', name: '会场', color: '#EFF5F4', ruleTag: 'other' }
-  ]
   const cells: Record<string, SheetCell> = {}
 
   // 主席台：整排单人位，居中留出两端空列
@@ -23,7 +18,6 @@ function buildTemplate(opts: {
     cells[keyOf(0, c)] = {
       kind: 'podium',
       seats: 1,
-      zoneId: 'zone-stage',
       tableId: 'table-stage',
       tableLabel: c === podiumCols[0] ? '主席台' : undefined
     }
@@ -37,11 +31,9 @@ function buildTemplate(opts: {
   for (let r = 2; r < rows; r++) {
     const tableId = uid('table')
     for (let c = 0; c < cols; c++) {
-      const zoneId = r <= 3 ? 'zone-front' : 'zone-hall'
       cells[keyOf(r, c)] = {
         kind: 'seat',
         seats: 2,
-        zoneId,
         tableId,
         tableLabel: c === 0 ? `${r - 1} 排` : undefined
       }
@@ -59,7 +51,7 @@ function buildTemplate(opts: {
     name,
     canvas: { width: w, height: h, background: '#FFFFFF' },
     sheet: { ...sheet, cells },
-    zones,
+    zones: [],
     elements: [],
     createdAt: now,
     updatedAt: now

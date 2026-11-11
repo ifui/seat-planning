@@ -30,11 +30,15 @@ const emit = defineEmits<{
   (e: 'update:active', v: { row: number; col: number }): void
   (e: 'commit'): void
   (e: 'context', p: { x: number; y: number; row: number; col: number }): void
+  /** 在行号 / 列标上右键：axis 指明方向，index 为被点的行/列下标 */
+  (e: 'header-context', p: { x: number; y: number; axis: 'row' | 'col'; index: number }): void
   (e: 'edit', p: { row: number; col: number; text: string }): void
   (e: 'command', cmd: 'copy' | 'paste' | 'clear' | 'undo' | 'redo' | 'fill-down' | 'fill-right'): void
   (e: 'element-select', id: string): void
   (e: 'element-change', id: string, patch: Partial<LayoutElement>): void
   (e: 'element-commit'): void
+  /** 点击表体以外的画布空白：用于取消区域临时高亮，不参与选区与历史 */
+  (e: 'blank'): void
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -345,11 +349,14 @@ const selRect = computed(() => {
   return cellRect(props.sheet, r1, c1, r2 - r1 + 1, c2 - c1 + 1)
 })
 
+/** 选中/活动指示层整体内缩，避免 1.5–2px 主色框压在 1px 黑色外框上叠成粗边 */
+const INDICATOR_INSET = 2
+
 const selStyle = computed(() => ({
-  left: selRect.value.x + 'px',
-  top: selRect.value.y + 'px',
-  width: selRect.value.w + 'px',
-  height: selRect.value.h + 'px'
+  left: selRect.value.x + INDICATOR_INSET + 'px',
+  top: selRect.value.y + INDICATOR_INSET + 'px',
+  width: Math.max(1, selRect.value.w - INDICATOR_INSET * 2) + 'px',
+  height: Math.max(1, selRect.value.h - INDICATOR_INSET * 2) + 'px'
 }))
 
 const activeRect = computed(() => {
@@ -362,10 +369,10 @@ const activeRect = computed(() => {
 })
 
 const activeStyle = computed(() => ({
-  left: activeRect.value.x + 'px',
-  top: activeRect.value.y + 'px',
-  width: activeRect.value.w + 'px',
-  height: activeRect.value.h + 'px'
+  left: activeRect.value.x + INDICATOR_INSET + 'px',
+  top: activeRect.value.y + INDICATOR_INSET + 'px',
+  width: Math.max(1, activeRect.value.w - INDICATOR_INSET * 2) + 'px',
+  height: Math.max(1, activeRect.value.h - INDICATOR_INSET * 2) + 'px'
 }))
 
 // ---------- 坐标换算 ----------
@@ -427,11 +434,16 @@ function onPointerDown(e: PointerEvent): void {
     startPan(e)
     return
   }
+  const target = e.target as HTMLElement
+  // 表体以外的空白：只通知外部清临时高亮，不动选区、不写历史
+  if (!target.closest('.sg-space')) {
+    emit('blank')
+    return
+  }
   if (props.readonly) return
   if (e.button !== 0) return
   const p = locate(e.clientX, e.clientY)
   if (!p) return
-  const target = e.target as HTMLElement
   if (target.closest('.sg-edit')) return
   scrollEl.value?.focus({ preventScroll: true })
   selectCell(p.row, p.col, e.shiftKey)
@@ -629,6 +641,16 @@ function onContextMenu(e: MouseEvent): void {
   emit('context', { x: e.clientX, y: e.clientY, row: p.row, col: p.col })
 }
 
+/** 行号 / 列标右键：先整行/整列选中，再把菜单交给父组件按表头坐标处理 */
+function onHeaderContext(e: MouseEvent, axis: 'row' | 'col', index: number): void {
+  if (props.readonly) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (axis === 'row') selectRow(index)
+  else selectCol(index)
+  emit('header-context', { x: e.clientX, y: e.clientY, axis, index })
+}
+
 // ---------- 键盘 ----------
 
 function moveTo(row: number, col: number, extend = false): void {
@@ -800,6 +822,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
             class="sg-ch"
             :style="{ left: x * scale + 'px', width: colWidthAt(sheet, c) * scale + 'px' }"
             @click="selectCol(c)"
+            @contextmenu.prevent="onHeaderContext($event, 'col', c)"
           >
             {{ c + 1 }}
             <span class="sg-rz" @pointerdown.stop="startColResize(c, $event)" />
@@ -813,6 +836,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
           class="sg-ch is-frozen"
           :style="{ left: colXs[c - 1] * scale + 'px', width: colWidthAt(sheet, c - 1) * scale + 'px' }"
           @click="selectCol(c - 1)"
+          @contextmenu.prevent="onHeaderContext($event, 'col', c - 1)"
         >
           {{ c }}
           <span class="sg-rz" @pointerdown.stop="startColResize(c - 1, $event)" />
@@ -829,6 +853,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
             class="sg-rh"
             :style="{ top: y * scale + 'px', height: rowHeightAt(sheet, r) * scale + 'px' }"
             @click="selectRow(r)"
+            @contextmenu.prevent="onHeaderContext($event, 'row', r)"
           >
             {{ r + 1 }}
             <span class="sg-rh-rz" @pointerdown.stop="startRowResize(r, $event)" />
@@ -842,6 +867,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
           class="sg-rh is-frozen"
           :style="{ top: rowYs[r - 1] * scale + 'px', height: rowHeightAt(sheet, r - 1) * scale + 'px' }"
           @click="selectRow(r - 1)"
+          @contextmenu.prevent="onHeaderContext($event, 'row', r - 1)"
         >
           {{ r }}
           <span class="sg-rh-rz" @pointerdown.stop="startRowResize(r - 1, $event)" />
@@ -929,7 +955,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
               :width="Math.max(1, v.w - 2)"
               :height="Math.max(1, v.h - 2)"
               :fill="zoneHighlight.color"
-              fill-opacity="0.55"
+              fill-opacity="0.32"
               stroke="var(--primary)"
               stroke-width="1.5"
               stroke-dasharray="5 3"
@@ -992,7 +1018,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
                 v-for="v in fzZoneRows"
                 :key="'fzr' + v.key"
                 :x="v.x + 1" :y="v.y + 1" :width="Math.max(1, v.w - 2)" :height="Math.max(1, v.h - 2)"
-                :fill="zoneHighlight.color" fill-opacity="0.55" stroke="var(--primary)" stroke-width="1.5"
+                :fill="zoneHighlight.color" fill-opacity="0.32" stroke="var(--primary)" stroke-width="1.5"
                 stroke-dasharray="5 3" vector-effect="non-scaling-stroke"
               />
             </svg>
@@ -1033,7 +1059,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
                 v-for="v in fzZoneCols"
                 :key="'fzc' + v.key"
                 :x="v.x + 1" :y="v.y + 1" :width="Math.max(1, v.w - 2)" :height="Math.max(1, v.h - 2)"
-                :fill="zoneHighlight.color" fill-opacity="0.55" stroke="var(--primary)" stroke-width="1.5"
+                :fill="zoneHighlight.color" fill-opacity="0.32" stroke="var(--primary)" stroke-width="1.5"
                 stroke-dasharray="5 3" vector-effect="non-scaling-stroke"
               />
             </svg>
@@ -1070,7 +1096,7 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
                 v-for="v in fzZoneCorner"
                 :key="'fzx' + v.key"
                 :x="v.x + 1" :y="v.y + 1" :width="Math.max(1, v.w - 2)" :height="Math.max(1, v.h - 2)"
-                :fill="zoneHighlight.color" fill-opacity="0.55" stroke="var(--primary)" stroke-width="1.5"
+                :fill="zoneHighlight.color" fill-opacity="0.32" stroke="var(--primary)" stroke-width="1.5"
                 stroke-dasharray="5 3" vector-effect="non-scaling-stroke"
               />
             </svg>
@@ -1169,7 +1195,9 @@ defineExpose({ focus: () => scrollEl.value?.focus({ preventScroll: true }), star
 .sg-space { position: relative; }
 .sg-inner { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 /* 辅助线只做定位参考：很淡的虚线网格，不参与排座/打印/导出；显式边框才按用户设置绘制 */
-.sg-guides, .sg-borders { position: absolute; left: 0; top: 0; pointer-events: none; }
+.sg-guides, .sg-borders, .sg-zone { position: absolute; left: 0; top: 0; pointer-events: none; }
+/* 区域高亮必须压在座位层之上：已排座座位有不透明底色，否则高亮会被完全盖住 */
+.sg-zone { z-index: 5; }
 /* 外圈边线按设备像素对齐后会探出 0.5px，放开裁剪避免最外圈变细 */
 .sg-borders { overflow: visible; z-index: 4; }
 .sg-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 3; }

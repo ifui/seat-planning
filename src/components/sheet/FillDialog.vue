@@ -1,25 +1,21 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import type { ZoneDef } from '../../types'
+import { ref, watch } from 'vue'
 import UiButton from '../../ui/components/UiButton.vue'
 import UiModal from '../../ui/components/UiModal.vue'
-import UiSelect from '../../ui/components/UiSelect.vue'
 
 const props = defineProps<{
   modelValue: boolean
   rangeLabel: string
-  zones: ZoneDef[]
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
-  (e: 'fill', payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string; zoneId: string }): void
+  (e: 'fill', payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string }): void
 }>()
 
 const kind = ref<'seat' | 'podium'>('seat')
 const tablePerRow = ref(true)
 const tableLabel = ref('')
-const zoneId = ref('')
 
 watch(
   () => props.modelValue,
@@ -28,15 +24,9 @@ watch(
       kind.value = 'seat'
       tablePerRow.value = true
       tableLabel.value = ''
-      zoneId.value = ''
     }
   }
 )
-
-const zoneOptions = computed(() => [
-  { value: '', label: '不分配区域' },
-  ...props.zones.map((z) => ({ value: z.id, label: z.name }))
-])
 
 function submit(): void {
   emit('fill', {
@@ -44,8 +34,7 @@ function submit(): void {
     // 布局只铺单人桌位；一桌坐几人由排座项目按会议设置
     seats: 1,
     tablePerRow: tablePerRow.value,
-    tableLabel: tableLabel.value.trim(),
-    zoneId: zoneId.value
+    tableLabel: tableLabel.value.trim()
   })
   emit('update:modelValue', false)
 }
@@ -55,7 +44,7 @@ function submit(): void {
   <UiModal
     :model-value="modelValue"
     title="批量填充座位"
-    :description="`把 ${rangeLabel} 按座位格批量铺开；合并区自动跳过`"
+    :description="`${rangeLabel}；合并区自动跳过`"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div class="fd">
@@ -74,11 +63,6 @@ function submit(): void {
         <span>桌名（可选）</span>
         <input v-model="tableLabel" placeholder="如：1 排" />
       </label>
-      <label class="fd-field">
-        <span>区域</span>
-        <UiSelect v-model="zoneId" :options="zoneOptions" size="sm" />
-      </label>
-      <p class="fd-hint">填充只决定座位位置；一桌坐几人请在排座项目中设置。</p>
     </div>
     <template #footer>
       <UiButton variant="ghost" size="sm" @click="emit('update:modelValue', false)">取消</UiButton>

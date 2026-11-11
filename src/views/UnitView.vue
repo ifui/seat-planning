@@ -289,7 +289,6 @@ function askDelete(u: UnitNode): void {
     <div>
       <div class="page-eyebrow">名册与组织 / 单位编制序列</div>
       <h1 class="page-title">单位编制序列</h1>
-      <p class="page-desc">同一职级内按单位在序列中的先后排座。支持多层级，拖拽手柄可调整同级顺序，也可把单位拖入其它单位成为下级。</p>
     </div>
     <div class="head-actions">
       <div style="width: 176px">
@@ -307,122 +306,88 @@ function askDelete(u: UnitNode): void {
   <div v-if="!draft" class="empty">当前没有名册方案，请先返回名册页新建方案。</div>
 
   <template v-else>
-    <div class="stat-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr))">
-      <div class="stat"><div class="stat-k">单位数量</div><div class="stat-v">{{ draft.units.length }}</div></div>
-      <div class="stat"><div class="stat-k">最大层级</div><div class="stat-v">{{ maxDepth }}</div></div>
-      <div class="stat"><div class="stat-k">已归属人员</div><div class="stat-v">{{ coveredMembers }}</div></div>
+    <div class="stat-grid">
+      <div class="stat"><span class="stat-k">单位数量</span><span class="stat-v">{{ draft.units.length }}</span></div>
+      <div class="stat"><span class="stat-k">最大层级</span><span class="stat-v">{{ maxDepth }}</span></div>
+      <div class="stat"><span class="stat-k">已归属人员</span><span class="stat-v">{{ coveredMembers }}</span></div>
     </div>
 
-    <div class="workspace">
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <div class="card-title">编制树</div>
-            <div class="card-sub">编号排序采用同级顺序；上下级关系决定路径显示与排序词典</div>
-          </div>
-          <div style="display: flex; gap: 6px">
-            <button class="btn ghost xs" @click="collapsed = new Set()">全部展开</button>
-            <span class="tag ink">{{ flat.length }} / {{ draft.units.length }}</span>
-          </div>
+    <section class="card">
+      <div class="card-head">
+        <div class="card-title">编制树</div>
+        <div class="head-actions">
+          <button class="btn ghost xs" @click="collapsed = new Set()">全部展开</button>
+          <span class="tag ink">{{ flat.length }} / {{ draft.units.length }}</span>
         </div>
-
-        <div class="seq-list">
-          <div
-            v-for="row in flat"
-            :key="row.node.id"
-            class="seq-row"
-            :class="{ dragging: dragId === row.node.id, 'drop-target': dropId === row.node.id }"
-            :style="{ paddingLeft: 12 + row.depth * 22 + 'px' }"
-            @dragover="onDragOver($event, row.node.id)"
-            @dragleave="dropId = dropId === row.node.id ? '' : dropId"
-            @drop.prevent="onDrop(row.node.id)"
-          >
-            <button
-              v-if="row.hasChildren"
-              class="seq-collapse"
-              :title="collapsed.has(row.node.id) ? '展开' : '收起'"
-              @click="toggle(row.node.id)"
-            >
-              <svg width="8" height="8" viewBox="0 0 8 8" :style="{ transform: collapsed.has(row.node.id) ? 'rotate(-90deg)' : '', transition: 'transform .15s ease' }">
-                <path d="M1 2l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-              </svg>
-            </button>
-            <span v-else class="seq-collapse" style="cursor: default">
-              <svg width="5" height="5" viewBox="0 0 5 5"><circle cx="2.5" cy="2.5" r="1.4" fill="#c9c7be" /></svg>
-            </span>
-
-            <span
-              class="seq-handle"
-              draggable="true"
-              title="拖拽调整顺序或归属"
-              @dragstart="onDragStart($event, row.node.id)"
-              @dragend="onDragEnd"
-            >
-              <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
-                <g fill="currentColor">
-                  <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
-                  <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
-                  <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
-                </g>
-              </svg>
-            </span>
-
-            <span class="seq-name">{{ row.node.name }}</span>
-            <span v-if="row.node.code" class="tag">{{ row.node.code }}</span>
-            <span class="seq-grow" />
-            <span v-if="row.childCount" class="seq-meta">下辖 {{ row.childCount }}</span>
-            <span class="tag">{{ memberCount(row.node.id) }} 人</span>
-
-            <div class="seq-actions">
-              <button class="icon-btn" :disabled="!draft.units.some(u => u.parentId === row.node.id && u.order < row.node.order)" title="上移" @click="move(row.node.id, -1)">
-                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 8V2M2 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
-              </button>
-              <button class="icon-btn" :disabled="!draft.units.some(u => u.parentId === row.node.id && u.order > row.node.order)" title="下移" @click="move(row.node.id, 1)">
-                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
-              </button>
-              <button class="btn ghost xs" @click="openAdd(row.node.id)">加下级</button>
-              <button class="btn ghost xs" @click="openEdit(row.node)">编辑</button>
-              <button class="btn ghost xs" style="color: var(--danger)" @click="askDelete(row.node)">删除</button>
-            </div>
-          </div>
-          <div v-if="!flat.length" class="empty">还没有单位，点右上「新增单位」开始。</div>
-        </div>
-      </section>
-
-      <div class="panel">
-        <section class="card tight">
-          <div class="card-title" style="margin-bottom: 10px">序列如何生效</div>
-          <div class="row-list">
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">01</span>
-              <div class="grow caption" style="font-size: 11px">同职级人员按单位路径的字典序排座，上级单位的排序优先于下级。</div>
-            </div>
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">02</span>
-              <div class="grow caption" style="font-size: 11px">拖拽到另一单位上，会将单位改为它的下级并排在末尾。</div>
-            </div>
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">03</span>
-              <div class="grow caption" style="font-size: 11px">有下级或有人员的单位需先清空才能删除。</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="card tight">
-          <div class="card-head">
-            <div class="card-title">名册</div>
-            <span class="tag">{{ draft.members.length }} 人</span>
-          </div>
-          <div class="caption">当前配置属于「{{ draft.name }}」。切换上方名册方案会加载对应的一套单位树。</div>
-        </section>
       </div>
-    </div>
+
+      <div class="seq-list">
+        <div
+          v-for="row in flat"
+          :key="row.node.id"
+          class="seq-row"
+          :class="{ dragging: dragId === row.node.id, 'drop-target': dropId === row.node.id, 'is-parent': row.hasChildren }"
+          :style="{ paddingLeft: 12 + row.depth * 22 + 'px' }"
+          @dragover="onDragOver($event, row.node.id)"
+          @dragleave="dropId = dropId === row.node.id ? '' : dropId"
+          @drop.prevent="onDrop(row.node.id)"
+        >
+          <button
+            v-if="row.hasChildren"
+            class="seq-collapse"
+            :title="collapsed.has(row.node.id) ? '展开' : '收起'"
+            @click="toggle(row.node.id)"
+          >
+            <svg width="8" height="8" viewBox="0 0 8 8" :style="{ transform: collapsed.has(row.node.id) ? 'rotate(-90deg)' : '', transition: 'transform .15s ease' }">
+              <path d="M1 2l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </button>
+          <span v-else class="seq-collapse" style="cursor: default">
+            <svg width="5" height="5" viewBox="0 0 5 5"><circle cx="2.5" cy="2.5" r="1.4" fill="#c9c7be" /></svg>
+          </span>
+
+          <span
+            class="seq-handle"
+            draggable="true"
+            title="拖拽调整顺序或归属"
+            @dragstart="onDragStart($event, row.node.id)"
+            @dragend="onDragEnd"
+          >
+            <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
+              <g fill="currentColor">
+                <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
+                <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
+                <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
+              </g>
+            </svg>
+          </span>
+
+          <span class="seq-name">{{ row.node.name }}</span>
+          <span v-if="row.node.code" class="tag">{{ row.node.code }}</span>
+          <span class="seq-grow" />
+          <span v-if="row.childCount" class="seq-meta">下辖 {{ row.childCount }}</span>
+          <span class="tag">{{ memberCount(row.node.id) }} 人</span>
+
+          <div class="seq-actions">
+            <button class="icon-btn" :disabled="!draft.units.some(u => u.parentId === row.node.id && u.order < row.node.order)" title="上移" @click="move(row.node.id, -1)">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 8V2M2 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+            </button>
+            <button class="icon-btn" :disabled="!draft.units.some(u => u.parentId === row.node.id && u.order > row.node.order)" title="下移" @click="move(row.node.id, 1)">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+            </button>
+            <button class="btn ghost xs" @click="openAdd(row.node.id)">加下级</button>
+            <button class="btn ghost xs" @click="openEdit(row.node)">编辑</button>
+            <button class="btn ghost xs" style="color: var(--danger)" @click="askDelete(row.node)">删除</button>
+          </div>
+        </div>
+        <div v-if="!flat.length" class="empty">还没有单位，点右上「新增单位」开始。</div>
+      </div>
+    </section>
   </template>
 
   <UiModal
     v-model="unitOpen"
     :title="editingId ? '编辑单位' : '新增单位'"
-    :description="editingId ? '调整上级会改变该单位在序列中的位置' : '可指定上级单位，也可以先建根级单位'"
   >
     <div class="field-row">
       <div class="field">
@@ -443,7 +408,7 @@ function askDelete(u: UnitNode): void {
         placeholder="无（根级单位）"
         @update:model-value="form.parentId = $event"
       />
-      <span v-if="parentLocked !== null && !editingId" class="caption">从该行「加下级」进入，上级已锁定；如需调整可用「编辑」。</span>
+      <span v-if="parentLocked !== null && !editingId" class="caption">上级已锁定，可用「编辑」调整。</span>
     </div>
     <template #footer>
       <button class="btn" @click="unitOpen = false">取消</button>

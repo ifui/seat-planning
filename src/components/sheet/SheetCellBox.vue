@@ -71,10 +71,10 @@ const cellStyle = computed(() => {
 .sg-seat-cell.podium {
   background: #fff;
 }
-/* 固定空位/不可用：斜线底纹 + 虚线边框，与可排座位一眼区分 */
+/* 不坐人：细斜线底纹 + 虚线边框，与可排座位一眼区分 */
 .sg-seat-cell.is-disabled {
-  background: repeating-linear-gradient(45deg, #f3f4f4, #f3f4f4 5px, #e7e9e9 5px, #e7e9e9 10px);
-  border: 1px dashed #b9c0c1;
+  background: repeating-linear-gradient(45deg, var(--bg-subtle) 0 4px, var(--border-strong) 4px 5px);
+  border: 1px dashed var(--border-strong);
 }
 .sg-seat-cell.is-disabled .sg-seat-dots i { background: #eceeee; border-color: #c9cfd0; }
 

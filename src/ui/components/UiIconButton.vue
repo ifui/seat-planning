@@ -6,11 +6,12 @@ withDefaults(
     icon: string
     iconSize?: number
     title?: string
+    ariaLabel?: string
     active?: boolean
     disabled?: boolean
     danger?: boolean
   }>(),
-  { iconSize: 16, title: '', active: false, disabled: false, danger: false }
+  { iconSize: 16, title: '', ariaLabel: '', active: false, disabled: false, danger: false }
 )
 </script>
 
@@ -20,6 +21,7 @@ withDefaults(
     class="icon-btn"
     :class="{ active }"
     :title="title"
+    :aria-label="ariaLabel || title || undefined"
     :disabled="disabled"
     :style="danger ? { color: 'var(--danger)' } : undefined"
   >

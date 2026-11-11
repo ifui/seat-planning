@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { LayoutPackage, Member, RankDef, RuleSet, TierRule, UnitNode, ZoneRule } from '../types'
-import { uid } from '../engine/sheet'
+import { uid, seatsOfSheet } from '../engine/sheet'
 import UiSelect from '../ui/components/UiSelect.vue'
+import UiNumberInput from '../ui/components/UiNumberInput.vue'
 import UiModal from '../ui/components/UiModal.vue'
 
 const props = defineProps<{
@@ -16,12 +17,17 @@ const props = defineProps<{
 const sortedRanks = computed(() => [...props.ranks].sort((a, b) => a.order - b.order))
 
 // 下拉项只保留名称，说明文案统一放在侧栏的提示里
+const STAGE_SIDE_OPTIONS = [
+  { value: 'left', label: '左为上' },
+  { value: 'right', label: '右为上' }
+]
 const EVEN_OPTIONS = [
   { value: 'left', label: '左中位' },
   { value: 'right', label: '右中位' }
 ]
 const HALL_ORDER_OPTIONS = [
-  { value: 'center-out', label: '中间向两侧' },
+  { value: 'center-left', label: '中间左优先' },
+  { value: 'center-right', label: '中间右优先' },
   { value: 'left-to-right', label: '从左到右' },
   { value: 'right-to-left', label: '从右到左' }
 ]
@@ -109,13 +115,16 @@ const zoneRules = computed<ZoneRule[]>(() => props.rules.zoneRules ?? [])
 const zoneOnlyOptions = computed(() => props.layout.zones.map((z) => ({ value: z.id, label: z.name })))
 const zoneName = (id: string): string => props.layout.zones.find((z) => z.id === id)?.name ?? '未选区域'
 
-/** 区域容量：该区域包含的座位数 */
+/**
+ * 区域容量：与排座引擎同源，按实际座位槽统计。
+ * 合并块（如 3 座主席台）要按块内座位数计入，而不是按格子数；
+ * 禁用座位与引擎一致，不计入可用容量。
+ */
 const zoneSeats = computed<Record<string, number>>(() => {
   const out: Record<string, number> = {}
-  for (const cell of Object.values(props.layout.sheet.cells)) {
-    if (!cell.zoneId) continue
-    if (cell.kind !== 'seat' && cell.kind !== 'podium') continue
-    out[cell.zoneId] = (out[cell.zoneId] ?? 0) + Math.max(1, cell.seats ?? 1)
+  for (const seat of seatsOfSheet(props.layout.sheet)) {
+    if (seat.disabled || !seat.zoneId) continue
+    out[seat.zoneId] = (out[seat.zoneId] ?? 0) + 1
   }
   return out
 })
@@ -138,6 +147,7 @@ function ensureZoneRules(): ZoneRule[] {
 }
 
 function addZoneRule(): void {
+  if (!props.layout.zones.length) return
   const list = ensureZoneRules()
   snapZone()
   list.push({
@@ -173,8 +183,22 @@ function preview(rule: ZoneRule): string {
   const ex = new Set(rule.excludeRankIds)
   const hit = activeMembers.value.filter((m) => set.has(m.rankId) && !ex.has(m.rankId)).length
   const cap = zoneSeats.value[rule.zoneId] ?? 0
+  if (!cap) {
+    const who = rule.rankIds.length ? `预计 ${hit} 人 · ` : ''
+    return `${who}区域暂无座位（请先在座位图把座位格归入该区域）`
+  }
   if (!rule.rankIds.length) return `未限定级别 · 区域 ${cap} 座`
   return `预计 ${hit} 人 → 区域 ${cap} 座${hit > cap ? `（超出 ${hit - cap} 人）` : ''}`
+}
+
+/** 预览是否需要示警：人数超出或区域没有座位 */
+function previewWarn(rule: ZoneRule): boolean {
+  const cap = zoneSeats.value[rule.zoneId] ?? 0
+  if (!cap) return true
+  const set = new Set(rule.rankIds)
+  const ex = new Set(rule.excludeRankIds)
+  const hit = activeMembers.value.filter((m) => set.has(m.rankId) && !ex.has(m.rankId)).length
+  return hit > cap
 }
 
 // 手动勾选人员
@@ -221,6 +245,10 @@ function savePicker(): void {
     <!-- 基础排法：每项一行，标签在上、下拉独占整行 -->
     <div class="rules-stack">
       <div class="field">
+        <label>主席台座次</label>
+        <UiSelect v-model="rules.stageSide" :options="STAGE_SIDE_OPTIONS" size="sm" />
+      </div>
+      <div class="field">
         <label>主席台 1 号位</label>
         <UiSelect v-model="rules.evenCenterSide" :options="EVEN_OPTIONS" size="sm" />
       </div>
@@ -245,7 +273,7 @@ function savePicker(): void {
       <button class="btn sm" @click="addTier">+ 规则</button>
     </div>
 
-    <div v-if="!rules.tiers.length" class="rules-empty">未设置：按「职级 → 单位 → 名单序」统一排序。</div>
+    <div v-if="!rules.tiers.length" class="rules-empty">未设置</div>
 
     <div class="tier-list">
       <div v-for="t in rules.tiers" :key="t.id" class="tr">
@@ -255,9 +283,9 @@ function savePicker(): void {
           </div>
           <template v-if="t.by === 'row'">
             <span class="tr-txt">第</span>
-            <input v-model.number="t.from" type="number" class="insp-input tr-num" min="1" />
+            <UiNumberInput :model-value="t.from" :min="1" :max="300" :width="46" label="起始排" @update:model-value="t.from = $event" />
             <span class="tr-txt">–</span>
-            <input v-model.number="t.to" type="number" class="insp-input tr-num" min="1" />
+            <UiNumberInput :model-value="t.to" :min="1" :max="300" :width="46" label="结束排" @update:model-value="t.to = $event" />
             <span class="tr-txt">排</span>
           </template>
           <div v-else class="tr-zone">
@@ -294,11 +322,11 @@ function savePicker(): void {
         <b>2</b>
         <span>区域人员分配</span>
       </div>
-      <button class="btn sm" @click="addZoneRule">+ 规则</button>
+      <button class="btn sm" :disabled="!layout.zones.length" @click="addZoneRule">+ 规则</button>
     </div>
 
-    <div v-if="!layout.zones.length" class="rules-empty">还没有区域，先到「会场布局」给格子分配区域。</div>
-    <div v-else-if="!zoneRules.length" class="rules-empty">未配置：所有人按职级分层与名单顺序统一排座。</div>
+    <div v-if="!layout.zones.length" class="rules-empty">还没有区域，先在座位图框选后到属性面板新建。</div>
+    <div v-else-if="!zoneRules.length" class="rules-empty">未配置</div>
 
     <div class="zone-list">
       <div v-for="rule in zoneRules" :key="rule.id" class="zr">
@@ -329,7 +357,7 @@ function savePicker(): void {
           </button>
         </div>
 
-        <details class="zr-adv" :open="rule.excludeRankIds.length > 0">
+        <details class="zr-adv ui-fold" :open="rule.excludeRankIds.length > 0">
           <summary>排除级别<span v-if="rule.excludeRankIds.length">（{{ rule.excludeRankIds.length }}）</span></summary>
           <button
             class="rank-pick ex"
@@ -343,20 +371,9 @@ function savePicker(): void {
 
         <div class="zr-result">
           <button class="btn sm" @click="openPicker(rule)">指定人员 {{ rule.memberIds.length }}</button>
-          <span class="zr-preview" :class="{ 'is-warn': preview(rule).includes('超出') }">{{ preview(rule) }}</span>
+          <span class="zr-preview" :class="{ 'is-warn': previewWarn(rule) }">{{ preview(rule) }}</span>
         </div>
       </div>
-    </div>
-
-    <!-- 说明固定显示在面板最底部 -->
-    <div class="rules-help">
-      <div class="rules-help-title">规则说明</div>
-      <ul>
-        <li>1 号居中，2 号在 1 号左手边（画布右侧），左右交替；主席台与台下一致。</li>
-        <li>请假人员不参与排座，在「名单」里切换在位 / 请假。</li>
-        <li>分层限制该排 / 区域只能坐勾选的职级，未勾选的人不会挤占。</li>
-        <li>区域优先级：手动勾选人员 &gt; 区域级别规则 &gt; 职级分层规则；冲突会在排座提示里列出。</li>
-      </ul>
     </div>
 
     <UiModal v-model="pickerOpen" :title="`指定人员 · ${zoneName(zoneRules.find(r => r.id === pickerRuleId)?.zoneId ?? '')}`" width="520px">
@@ -416,7 +433,6 @@ function savePicker(): void {
 .tr-head { display: flex; align-items: center; gap: 5px; min-height: 28px; }
 .tr-by { width: 78px; flex: none; }
 .tr-txt { flex: none; font-size: var(--fs-xs); color: var(--text-secondary); }
-.tr-num { width: 42px; flex: none; padding: 0 4px; text-align: center; }
 .tr-zone { flex: 1; min-width: 0; }
 .tr-del {
   margin-left: auto; flex: none; width: 20px; height: 20px; padding: 0;
@@ -458,12 +474,9 @@ function savePicker(): void {
 .zr-line { display: flex; align-items: flex-start; gap: 6px; }
 .zr-k { flex: none; width: 30px; padding-top: 5px; font-size: var(--fs-xs); color: var(--text-secondary); }
 .zr-adv summary {
-  width: fit-content; cursor: pointer; list-style: none;
-  font-size: var(--fs-xs); color: var(--text-disabled); user-select: none;
+  width: 100%; margin-left: -6px; padding: 4px 6px;
+  font-size: var(--fs-xs); color: var(--text-muted);
 }
-.zr-adv summary::-webkit-details-marker { display: none; }
-.zr-adv summary::before { content: '› '; display: inline-block; transition: transform .12s ease; }
-.zr-adv[open] summary::before { transform: rotate(90deg); }
 .zr-adv .rank-pick { margin-top: 4px; width: 100%; }
 .zr-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .zr-preview { font-size: 11px; color: var(--text-muted); }
@@ -471,14 +484,6 @@ function savePicker(): void {
 .zr-undo { margin-left: 0; font-size: 13px; }
 .zr-undo:disabled { opacity: .35; cursor: default; }
 
-/* 规则说明：固定显示，不折叠 */
-.rules-help {
-  margin-top: 12px; padding-top: 9px;
-  border-top: 1px solid var(--border-soft);
-  font-size: var(--fs-xs); line-height: 1.65; color: var(--text-secondary);
-}
-.rules-help-title { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
-.rules-help ul { margin: 0; padding-left: 16px; }
 
 .picker-list { max-height: 320px; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
 .picker-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; font-size: 12px; cursor: pointer; }

@@ -1,4 +1,4 @@
-﻿import type { BlockRole, LayoutPackage, MergeRange, Sheet, SheetCell } from '../types'
+﻿import type { BlockRole, LayoutPackage, MergeRange, ProjectSeatOverlay, Sheet, SheetCell } from '../types'
 
 export const SHEET_MAX_ROWS = 300
 export const SHEET_MAX_COLS = 100
@@ -83,7 +83,7 @@ export function createBlankLayout(name = '新布局'): LayoutPackage {
     name,
     canvas: { width: 1400, height: 900, background: '#FFFFFF' },
     sheet,
-    zones: [{ id: 'zone-stage', name: '主席台', color: '#DCE4EE', ruleTag: 'podium' }],
+    zones: [],
     elements: [],
     createdAt: nowISO(),
     updatedAt: nowISO()
@@ -207,6 +207,102 @@ export function applySeatCapacity(s: Sheet, caps?: Record<string, number>): Shee
     changed = true
   }
   return changed ? { ...s, cells } : s
+}
+
+/** 单元格的稳定锚点：格内第一个座位的 id；非座位格返回 undefined */
+export function anchorSeatIdOfCell(cell?: SheetCell, row?: number, col?: number): string | undefined {
+  if (!cell || (cell.kind !== 'seat' && cell.kind !== 'podium')) return undefined
+  // 老布局可能没有持久化 seatIds，按与 seatsInRow 一致的派生规则兜底
+  if (cell.seatIds?.[0]) return cell.seatIds[0]
+  return row === undefined || col === undefined ? undefined : `seat-${row}-${col}-1`
+}
+
+/**
+ * 应用排座项目的覆盖层，返回新的 Sheet（不改动共享布局原件）。
+ * - 区域完全以覆盖层为准：布局里的旧 zoneId 一律忽略，覆盖层没有归属就为空；
+ * - 停用按 anchor seat id 命中整个单元格（格内所有座位一起停用）；
+ * - 每次合成都从布局原件重算，恢复停用只需要移除覆盖层记录。
+ */
+export function applySeatOverlay(s: Sheet, overlay?: ProjectSeatOverlay): Sheet {
+  if (!overlay) return s
+  const disabled = new Set(overlay.disabledCells ?? [])
+  const cellZones = overlay.cellZones ?? {}
+  const cells = { ...s.cells }
+  let changed = false
+  for (const [key, cell] of Object.entries(s.cells)) {
+    const [row, col] = key.split(':').map(Number)
+    const anchor = anchorSeatIdOfCell(cell, row, col)
+    if (!anchor) continue
+    const wantDisabled = disabled.has(anchor)
+    const wantZone = cellZones[anchor]
+    const disabledOk = !wantDisabled || !!cell.disabled
+    const zoneOk = wantZone ? cell.zoneId === wantZone : cell.zoneId === undefined
+    if (disabledOk && zoneOk) continue
+    const next: SheetCell = { ...cell }
+    if (wantDisabled && !next.disabled) next.disabled = true
+    if (wantZone) next.zoneId = wantZone
+    else delete next.zoneId
+    cells[key] = next
+    changed = true
+  }
+  return changed ? { ...s, cells } : s
+}
+
+/** 覆盖层引用清理结果：用于告知用户布局编辑后哪些设置失效 */
+export interface OverlayPruneResult {
+  removedDisabled: number
+  removedZones: number
+  removedZoneDefs: number
+  removedFixedSeats: number
+  disabledCells: string[]
+  cellZones: Record<string, string>
+  fixedSeats: Record<string, string>
+  zones: ProjectSeatOverlay['zones']
+}
+
+/**
+ * 用当前布局校验覆盖层：座位/单元格已不存在时丢弃对应引用；
+ * 区域定义被删掉时同步清理归属。返回新数据，不修改入参。
+ */
+export function pruneSeatOverlay(s: Sheet, overlay: ProjectSeatOverlay): OverlayPruneResult {
+  const anchors = new Set<string>()
+  for (const [key, cell] of Object.entries(s.cells)) {
+    const [row, col] = key.split(':').map(Number)
+    const anchor = anchorSeatIdOfCell(cell, row, col)
+    if (anchor) anchors.add(anchor)
+  }
+  const zoneIds = new Set(overlay.zones.map((z) => z.id))
+  const seatIds = new Set(seatsOfSheet(s).map((seat) => seat.seatId))
+  const disabledCells = (overlay.disabledCells ?? []).filter((id) => anchors.has(id))
+  const cellZones: Record<string, string> = {}
+  let removedZones = 0
+  for (const [anchor, zoneId] of Object.entries(overlay.cellZones ?? {})) {
+    if (!anchors.has(anchor) || !zoneIds.has(zoneId)) {
+      removedZones++
+      continue
+    }
+    cellZones[anchor] = zoneId
+  }
+  const fixedSeats: Record<string, string> = {}
+  let removedFixedSeats = 0
+  for (const [seatId, memberId] of Object.entries(overlay.fixedSeats ?? {})) {
+    if (!seatIds.has(seatId) || !memberId) {
+      removedFixedSeats++
+      continue
+    }
+    fixedSeats[seatId] = memberId
+  }
+  const zones = overlay.zones.filter((z) => z && z.id)
+  return {
+    removedDisabled: (overlay.disabledCells?.length ?? 0) - disabledCells.length,
+    removedZones,
+    removedZoneDefs: overlay.zones.length - zones.length,
+    removedFixedSeats,
+    disabledCells,
+    cellZones,
+    fixedSeats,
+    zones
+  }
 }
 
 export function normalizeSheet(input: Sheet): Sheet {
@@ -498,6 +594,26 @@ export function collectBorderLines(s: Sheet): BorderLine[] {
     }
   }
 
+  // 1.5) 多座位块的内部分隔线：只在座位槽之间，始终使用网格默认线。
+  // 合并块/多座位格一旦显式设置过边框，上面一步会整格跳过默认边，
+  // 内部座位槽就会连成一片；这里按座位数量补齐分隔线，外框仍由显式边框决定。
+  for (let row = 0; row < s.rows; row++) {
+    for (let col = 0; col < s.cols; col++) {
+      if (isCovered(s, row, col)) continue
+      const cell = cellAt(s, row, col)
+      if (!cell || cell.disabled) continue
+      if (cell.kind !== 'seat' && cell.kind !== 'podium') continue
+      const n = clampSeats(cell.seats ?? 1)
+      if (n < 2) continue
+      const m = mergeAt(s, row, col)
+      const r = cellRect(s, row, col, m?.rowSpan ?? 1, m?.colSpan ?? 1)
+      for (let i = 1; i < n; i++) {
+        const x = r.x + (r.w * i) / n
+        add(vLines, x, r.y, r.y + r.h, FALLBACK)
+      }
+    }
+  }
+
   // 2) 显式边框：只画用户选中的边，优先于默认边框
   for (const [key, cell] of Object.entries(s.cells)) {
     const sides = cell.style?.borders
@@ -552,7 +668,7 @@ export function collectBorderLines(s: Sheet): BorderLine[] {
 export function fillSeats(
   s: Sheet,
   range: CellRange,
-  opts: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel?: string; zoneId?: string }
+  opts: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel?: string }
 ): number {
   let count = 0
   const r = normalizeRange(range)
@@ -564,8 +680,7 @@ export function fillSeats(
       const cell: SheetCell = {
         kind: opts.kind,
         seats: clampSeats(opts.seats),
-        tableId: opts.tablePerRow ? tableId : uid('table'),
-        zoneId: opts.zoneId
+        tableId: opts.tablePerRow ? tableId : uid('table')
       }
       if (opts.tableLabel) cell.tableLabel = opts.tableLabel
       ensureSeatIds(cell)

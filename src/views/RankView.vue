@@ -3,12 +3,13 @@ import { computed, ref, watch } from 'vue'
 import type { RankDef, RosterPlan } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
-import { UiSelect, UiModal } from '../ui'
+import { UiSelect, UiModal, UiColorPicker } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
 const emit = defineEmits<{ (e: 'back'): void }>()
 
-const COLORS = ['#2E4654', '#3D5A6C', '#587A8E', '#7C9AA8', '#8B623D', '#A4774E', '#C2A079', '#5A7A61', '#6E7364', '#939B9A']
+/** 新增职级时的默认标识色（属于全站统一预设） */
+const DEFAULT_RANK_COLOR = '#3D5A6C'
 
 const first = state.rosters.find((r) => r.id === props.initialRosterId) ?? state.rosters[0]
 const selectedId = ref(first?.id ?? '')
@@ -123,12 +124,12 @@ function onDragEnd(): void { dragId.value = ''; dropId.value = '' }
 // ---- 新增 / 编辑 ----
 const rankOpen = ref(false)
 const editingId = ref<string | null>(null)
-const form = ref({ name: '', shortName: '', color: COLORS[1] })
+const form = ref({ name: '', shortName: '', color: DEFAULT_RANK_COLOR })
 
 function openAdd(): void {
   if (!draft.value) return
   editingId.value = null
-  form.value = { name: '', shortName: '', color: COLORS[1] }
+  form.value = { name: '', shortName: '', color: DEFAULT_RANK_COLOR }
   rankOpen.value = true
 }
 
@@ -193,7 +194,6 @@ function askDelete(r: RankDef): void {
     <div>
       <div class="page-eyebrow">名册与组织 / 职级序列</div>
       <h1 class="page-title">职级序列</h1>
-      <p class="page-desc">序号即排座优先级，越靠前越先落座；同一职级内再按单位编制序列与名单顺序安排。颜色用于座位表与名册标识。</p>
     </div>
     <div class="head-actions">
       <div style="width: 176px">
@@ -211,102 +211,68 @@ function askDelete(r: RankDef): void {
   <div v-if="!draft" class="empty">当前没有名册方案，请先返回名册页新建方案。</div>
 
   <template v-else>
-    <div class="stat-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr))">
-      <div class="stat"><div class="stat-k">职级数量</div><div class="stat-v">{{ sortedRanks.length }}</div></div>
-      <div class="stat"><div class="stat-k">已使用</div><div class="stat-v">{{ usedCount }}</div></div>
-      <div class="stat"><div class="stat-k">覆盖人数</div><div class="stat-v">{{ draft.members.length }}</div></div>
+    <div class="stat-grid">
+      <div class="stat"><span class="stat-k">职级数量</span><span class="stat-v">{{ sortedRanks.length }}</span></div>
+      <div class="stat"><span class="stat-k">已使用</span><span class="stat-v">{{ usedCount }}</span></div>
+      <div class="stat"><span class="stat-k">覆盖人数</span><span class="stat-v">{{ draft.members.length }}</span></div>
     </div>
 
-    <div class="workspace">
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <div class="card-title">序列与顺序</div>
-            <div class="card-sub">拖拽左侧手柄调整顺序，或用行内箭头微调；序号越小优先级越高</div>
-          </div>
-          <span class="tag ink">{{ sortedRanks.length }} 个职级</span>
-        </div>
-
-        <div class="seq-list">
-          <div
-            v-for="(r, i) in sortedRanks"
-            :key="r.id"
-            class="seq-row"
-            :class="{ dragging: dragId === r.id, 'drop-target': dropId === r.id }"
-            @dragover="onDragOver($event, r.id)"
-            @dragleave="dropId = dropId === r.id ? '' : dropId"
-            @drop.prevent="onDrop(r.id)"
-          >
-            <span
-              class="seq-handle"
-              draggable="true"
-              title="拖拽调整顺序"
-              @dragstart="onDragStart($event, r.id)"
-              @dragend="onDragEnd"
-            >
-              <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
-                <g fill="currentColor">
-                  <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
-                  <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
-                  <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
-                </g>
-              </svg>
-            </span>
-            <span class="seq-index mono">{{ String(i + 1).padStart(2, '0') }}</span>
-            <span class="seq-swatch" :style="{ background: r.color }" />
-            <span class="seq-name">{{ r.name }}</span>
-            <span v-if="r.shortName" class="seq-meta">{{ r.shortName }}</span>
-            <span class="seq-grow" />
-            <span class="tag">{{ memberCount(r.id) }} 人</span>
-            <div class="seq-actions">
-              <button class="icon-btn" :disabled="i === 0" title="上移" @click="move(r.id, -1)">
-                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 8V2M2 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
-              </button>
-              <button class="icon-btn" :disabled="i === sortedRanks.length - 1" title="下移" @click="move(r.id, 1)">
-                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
-              </button>
-              <button class="btn ghost xs" @click="openEdit(r)">编辑</button>
-              <button class="btn ghost xs" style="color: var(--danger)" @click="askDelete(r)">删除</button>
-            </div>
-          </div>
-          <div v-if="!sortedRanks.length" class="empty">还没有职级，点右上「新增职级」开始。</div>
-        </div>
-      </section>
-
-      <div class="panel">
-        <section class="card tight">
-          <div class="card-title" style="margin-bottom: 10px">顺序如何生效</div>
-          <div class="row-list">
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">01</span>
-              <div class="grow caption" style="font-size: 11px">主席台与台下都先按职级序号安排，序号 1 最先落座。</div>
-            </div>
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">02</span>
-              <div class="grow caption" style="font-size: 11px">同一职级内按单位编制序列，再按名单顺序排定先后。</div>
-            </div>
-            <div class="row-item" style="align-items: flex-start">
-              <span class="tag ink">03</span>
-              <div class="grow caption" style="font-size: 11px">颜色继承到座位表、名册与导出图片，建议相邻职级色相拉开。</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="card tight">
-          <div class="card-head">
-            <div class="card-title">名册</div>
-            <span class="tag">{{ draft.members.length }} 人</span>
-          </div>
-          <div class="caption">当前配置属于「{{ draft.name }}」。切换上方名册方案会加载对应的一套职级序列。</div>
-        </section>
+    <section class="card">
+      <div class="card-head">
+        <div class="card-title">序列与顺序</div>
+        <span class="tag ink">{{ sortedRanks.length }} 个职级</span>
       </div>
-    </div>
+
+      <div class="seq-list">
+        <div
+          v-for="(r, i) in sortedRanks"
+          :key="r.id"
+          class="seq-row"
+          :class="{ dragging: dragId === r.id, 'drop-target': dropId === r.id }"
+          @dragover="onDragOver($event, r.id)"
+          @dragleave="dropId = dropId === r.id ? '' : dropId"
+          @drop.prevent="onDrop(r.id)"
+        >
+          <span
+            class="seq-handle"
+            draggable="true"
+            title="拖拽调整顺序"
+            @dragstart="onDragStart($event, r.id)"
+            @dragend="onDragEnd"
+          >
+            <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
+              <g fill="currentColor">
+                <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
+                <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
+                <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
+              </g>
+            </svg>
+          </span>
+          <span class="seq-index mono">{{ String(i + 1).padStart(2, '0') }}</span>
+          <span class="seq-swatch" :style="{ background: r.color }" />
+          <span class="seq-name">{{ r.name }}</span>
+          <span v-if="r.shortName" class="seq-meta">{{ r.shortName }}</span>
+          <span class="seq-grow" />
+          <span class="tag">{{ memberCount(r.id) }} 人</span>
+          <div class="seq-actions">
+            <button class="icon-btn" :disabled="i === 0" title="上移" @click="move(r.id, -1)">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 8V2M2 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+            </button>
+            <button class="icon-btn" :disabled="i === sortedRanks.length - 1" title="下移" @click="move(r.id, 1)">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+            </button>
+            <button class="btn ghost xs" @click="openEdit(r)">编辑</button>
+            <button class="btn ghost xs" style="color: var(--danger)" @click="askDelete(r)">删除</button>
+          </div>
+        </div>
+        <div v-if="!sortedRanks.length" class="empty">还没有职级，点右上「新增职级」开始。</div>
+      </div>
+    </section>
   </template>
 
   <UiModal
     v-model="rankOpen"
     :title="editingId ? '编辑职级' : '新增职级'"
-    description="名称用于名册与座位图，颜色用于职级标识"
   >
     <div class="field-row">
       <div class="field">
@@ -320,18 +286,7 @@ function askDelete(r: RankDef): void {
     </div>
     <div class="field">
       <label>标识颜色</label>
-      <div class="swatch-row">
-        <button
-          v-for="c in COLORS"
-          :key="c"
-          type="button"
-          class="swatch"
-          :class="{ on: form.color === c }"
-          :style="{ background: c }"
-          :title="c"
-          @click="form.color = c"
-        />
-      </div>
+      <UiColorPicker v-model="form.color" custom-label="自定义职级标识色" />
     </div>
     <template #footer>
       <button class="btn" @click="rankOpen = false">取消</button>

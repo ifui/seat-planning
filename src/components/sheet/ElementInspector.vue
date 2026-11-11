@@ -19,6 +19,8 @@ import {
 import type { ElementTextAlign, ElementTextVAlign, LayerAction } from '../../engine/elements'
 import UiIcon from '../../ui/components/UiIcon.vue'
 import UiSelect from '../../ui/components/UiSelect.vue'
+import UiColorPicker from '../../ui/components/UiColorPicker.vue'
+import UiNumberInput from '../../ui/components/UiNumberInput.vue'
 
 const props = defineProps<{
   element: LayoutElement
@@ -38,9 +40,6 @@ const meta = computed(() => elementMeta(props.element.kind))
 const shape = computed(() => ELEMENT_SHAPES[props.element.kind])
 const geo = computed(() => resolveGeometry(props.element, props.sheet))
 
-const FILLS = ['#E8EEEE', '#7E9A9C', '#5B8A88', '#DDE6E7', '#F4EFE4', '#E6EDEF', '#6F8F6A', '#B4543E']
-const TEXT_COLORS = ['#3E4A4B', '#FFFFFF', '#41504F', '#4A7C7B', '#B4483F', '#3D6FA8']
-
 const textColor = computed(() => props.element.fontColor || elementTextColor(props.element.kind))
 const fontFamily = computed(() => props.element.fontFamily || ELEMENT_FONTS[0].value)
 const fontSize = computed(() => Math.round(props.element.fontSize ?? Math.max(8, Math.min(26, geo.value.h * meta.value.textRatio))))
@@ -50,14 +49,6 @@ const offsetX = computed(() => Math.round(props.element.textOffsetX ?? 0))
 const offsetY = computed(() => Math.round(props.element.textOffsetY ?? 0))
 
 const FONT_OPTIONS = ELEMENT_FONTS.map((f) => ({ value: f.value, label: f.label }))
-const STROKE_BASE = [1, 1.5, 2, 3]
-/** 线宽下拉始终包含当前值，避免默认 1.4 之类的值显示成占位文案 */
-const strokeOptions = computed(() => {
-  const current = Math.round(props.element.strokeWidth * 10) / 10
-  return [...new Set([...STROKE_BASE, current])]
-    .sort((a, b) => a - b)
-    .map((v) => ({ value: v, label: `${v} px` }))
-})
 const ALIGN_OPTIONS: { value: ElementTextAlign; label: string }[] = [
   { value: 'left', label: '左' },
   { value: 'center', label: '中' },
@@ -69,26 +60,17 @@ const VALIGN_OPTIONS: { value: ElementTextVAlign; label: string }[] = [
   { value: 'bottom', label: '下' }
 ]
 
-function num(v: unknown, fallback: number): number {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : fallback
+function setGeom(key: 'w' | 'h' | 'rotation', v: number): void {
+  const min = key === 'rotation' ? -360 : 12
+  const max = key === 'rotation' ? 360 : 4000
+  emit('update', { [key]: Math.max(min, Math.min(max, v)) }, true)
 }
 
-function setGeom(key: 'w' | 'h' | 'rotation', raw: string): void {
-  const current = key === 'rotation' ? props.element.rotation : geo.value[key]
-  const v = Math.max(key === 'rotation' ? -360 : 12, Math.min(key === 'rotation' ? 360 : 4000, num(raw, current)))
-  const patch: Partial<LayoutElement> = { [key]: v }
-  emit('update', patch, true)
+function setFontSize(v: number): void {
+  emit('update', { fontSize: Math.max(6, Math.min(120, v)) }, true)
 }
 
-function setFontSize(raw: string): void {
-  const v = Math.max(6, Math.min(120, num(raw, fontSize.value)))
-  emit('update', { fontSize: v }, true)
-}
-
-function setOffset(axis: 'textOffsetX' | 'textOffsetY', raw: string): void {
-  const current = axis === 'textOffsetX' ? offsetX.value : offsetY.value
-  const v = Math.max(-400, Math.min(400, Math.round(num(raw, current))))
+function setOffset(axis: 'textOffsetX' | 'textOffsetY', v: number): void {
   emit('update', axis === 'textOffsetX' ? { textOffsetX: v } : { textOffsetY: v }, true)
 }
 
@@ -121,23 +103,20 @@ function nudgeRotation(delta: number): void {
         <label class="insp-row">
           <span class="insp-label">宽</span>
           <span class="insp-ctl">
-            <input class="insp-input" type="number" :value="Math.round(geo.w)" min="12" @change="setGeom('w', ($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">px</em>
+            <UiNumberInput :model-value="Math.round(geo.w)" :min="12" :max="4000" unit="px" label="宽度" @change="setGeom('w', $event)" />
           </span>
         </label>
         <label class="insp-row">
           <span class="insp-label">高</span>
           <span class="insp-ctl">
-            <input class="insp-input" type="number" :value="Math.round(geo.h)" min="12" @change="setGeom('h', ($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">px</em>
+            <UiNumberInput :model-value="Math.round(geo.h)" :min="12" :max="4000" unit="px" label="高度" @change="setGeom('h', $event)" />
           </span>
         </label>
         <div class="insp-row">
           <span class="insp-label">旋转</span>
           <span class="insp-ctl">
             <input class="el-rot" type="range" :value="element.rotation" min="0" max="345" step="15" @input="emit('update', { rotation: Number(($event.target as HTMLInputElement).value) }, false)" @change="emit('update', {}, true)" />
-            <input class="insp-input insp-num" type="number" :value="Math.round(element.rotation)" min="-360" max="360" @change="setGeom('rotation', ($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">°</em>
+            <UiNumberInput :model-value="Math.round(element.rotation)" :min="-360" :max="360" :decimals="1" unit="°" label="旋转角度" @change="setGeom('rotation', $event)" />
           </span>
         </div>
       </div>
@@ -153,20 +132,16 @@ function nudgeRotation(delta: number): void {
       <div class="insp-rows">
         <div class="insp-row">
           <span class="insp-label">填充</span>
-          <span class="insp-ctl insp-swatches">
-            <button
-              v-for="c in FILLS"
-              :key="c"
-              type="button"
-              class="insp-swatch"
-              :class="{ on: element.color.toLowerCase() === c.toLowerCase() }"
-              :style="{ background: c }"
-              :title="c"
-              @click="emit('update', { color: c }, true)"
+          <span class="insp-ctl">
+            <UiColorPicker
+              :model-value="element.color"
+              allow-clear
+              clear-label="恢复默认填充"
+              custom-label="自定义填充色"
+              @update:model-value="emit('update', { color: $event }, false)"
+              @change="emit('update', {}, true)"
+              @clear="emit('update', { color: meta.color }, true)"
             />
-            <label class="insp-color" title="自定义填充色">
-              <input type="color" :value="element.color" @input="emit('update', { color: ($event.target as HTMLInputElement).value }, false)" @change="emit('update', {}, true)" />
-            </label>
           </span>
         </div>
         <div class="insp-row">
@@ -176,21 +151,40 @@ function nudgeRotation(delta: number): void {
               <input type="checkbox" :checked="element.bordered" @change="emit('update', { bordered: ($event.target as HTMLInputElement).checked }, true)" />
               <span class="insp-switch-track" />
             </label>
-            <template v-if="element.bordered">
-              <UiSelect
-                class="el-stroke"
-                size="sm"
-                :model-value="element.strokeWidth"
-                :options="strokeOptions"
-                @update:model-value="emit('update', { strokeWidth: Number($event) }, true)"
-              />
-              <label class="insp-color" title="边框颜色">
-                <input type="color" :value="element.stroke" @input="emit('update', { stroke: ($event.target as HTMLInputElement).value }, false)" @change="emit('update', {}, true)" />
-              </label>
-            </template>
-            <span v-else class="insp-note">无边框</span>
+            <span class="el-switch-hint">{{ element.bordered ? '显示' : '无边框' }}</span>
           </span>
         </div>
+        <template v-if="element.bordered">
+          <div class="insp-row">
+            <span class="insp-label">线宽</span>
+            <span class="insp-ctl">
+              <UiNumberInput
+                :model-value="element.strokeWidth"
+                :min="0.5"
+                :max="8"
+                :step="0.5"
+                :decimals="1"
+                unit="px"
+                label="边框线宽"
+                @change="emit('update', { strokeWidth: $event }, true)"
+              />
+            </span>
+          </div>
+          <div class="insp-row">
+            <span class="insp-label">颜色</span>
+            <span class="insp-ctl">
+              <UiColorPicker
+                :model-value="element.stroke"
+                allow-clear
+                clear-label="恢复默认边框色"
+                custom-label="边框颜色"
+                @update:model-value="emit('update', { stroke: $event }, false)"
+                @change="emit('update', {}, true)"
+                @clear="emit('update', { stroke: meta.stroke }, true)"
+              />
+            </span>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -206,8 +200,7 @@ function nudgeRotation(delta: number): void {
         <label class="insp-row">
           <span class="insp-label">字号</span>
           <span class="insp-ctl">
-            <input class="insp-input insp-num" type="number" :value="fontSize" min="6" max="120" @change="setFontSize(($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">px</em>
+            <UiNumberInput :model-value="fontSize" :min="6" :max="120" unit="px" label="字号" @change="setFontSize($event)" />
           </span>
         </label>
         <div class="insp-row">
@@ -223,20 +216,16 @@ function nudgeRotation(delta: number): void {
         </div>
         <div class="insp-row">
           <span class="insp-label">颜色</span>
-          <span class="insp-ctl insp-swatches">
-            <button
-              v-for="c in TEXT_COLORS"
-              :key="c"
-              type="button"
-              class="insp-swatch"
-              :class="{ on: textColor.toLowerCase() === c.toLowerCase() }"
-              :style="{ background: c }"
-              :title="c"
-              @click="emit('update', { fontColor: c }, true)"
+          <span class="insp-ctl">
+            <UiColorPicker
+              :model-value="textColor"
+              allow-clear
+              clear-label="恢复默认文字色"
+              custom-label="自定义文字颜色"
+              @update:model-value="emit('update', { fontColor: $event }, false)"
+              @change="emit('update', {}, true)"
+              @clear="emit('update', { fontColor: undefined }, true)"
             />
-            <label class="insp-color" title="自定义文字颜色">
-              <input type="color" :value="textColor" @input="emit('update', { fontColor: ($event.target as HTMLInputElement).value }, false)" @change="emit('update', {}, true)" />
-            </label>
           </span>
         </div>
         <div class="insp-row">
@@ -272,15 +261,13 @@ function nudgeRotation(delta: number): void {
         <label class="insp-row">
           <span class="insp-label">X 偏移</span>
           <span class="insp-ctl">
-            <input class="insp-input insp-num" type="number" :value="offsetX" min="-400" max="400" @change="setOffset('textOffsetX', ($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">px</em>
+            <UiNumberInput :model-value="offsetX" :min="-400" :max="400" unit="px" label="文字水平偏移" @change="setOffset('textOffsetX', $event)" />
           </span>
         </label>
         <label class="insp-row">
           <span class="insp-label">Y 偏移</span>
           <span class="insp-ctl">
-            <input class="insp-input insp-num" type="number" :value="offsetY" min="-400" max="400" @change="setOffset('textOffsetY', ($event.target as HTMLInputElement).value)" />
-            <em class="insp-unit">px</em>
+            <UiNumberInput :model-value="offsetY" :min="-400" :max="400" unit="px" label="文字垂直偏移" @change="setOffset('textOffsetY', $event)" />
           </span>
         </label>
       </div>
@@ -302,7 +289,7 @@ function nudgeRotation(delta: number): void {
     </section>
 
     <section class="insp-sec">
-      <details class="insp-keys">
+      <details class="insp-keys ui-fold">
         <summary>快捷键</summary>
         <ul>
           <li>Delete：删除元素</li>
@@ -322,8 +309,8 @@ function nudgeRotation(delta: number): void {
 .el-inspector { gap: 0; }
 /* 下拉在控件列里占满可用宽度，与输入框保持同一行宽 */
 .insp-ctl :deep(.ui-select) { flex: 1; min-width: 0; }
-.el-stroke { flex: 1; min-width: 0; }
 .el-rot { flex: 1; min-width: 0; accent-color: var(--primary); }
+.el-switch-hint { font-size: var(--fs-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .el-layer { display: flex; gap: 5px; }
 .el-layer button {
   width: 32px; height: 28px; display: grid; place-items: center;

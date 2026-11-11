@@ -20,6 +20,8 @@ export interface ChartOptions {
   showUnit?: boolean
   /** 序号取座位顺序（与画布 hit 顺序一致）；缺省用排内座号 */
   seatNumbers?: Map<string, number>
+  /** 固定座位：seatId → memberId；导出时在座位右上角画锁标识 */
+  fixedSeats?: Record<string, string>
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -45,6 +47,23 @@ function fitFont(ctx: CanvasRenderingContext2D, text: string, maxW: number, base
     ctx.font = `400 ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
   }
   return size
+}
+
+/** 固定座位标识：右上角小锁，克制尺寸，不影响姓名/座号/职级 */
+function drawSeatLock(ctx: CanvasRenderingContext2D, x: number, y: number, size = 7): void {
+  const k = size / 7
+  ctx.save()
+  ctx.strokeStyle = '#7C8A90'
+  ctx.fillStyle = '#7C8A90'
+  ctx.lineWidth = Math.max(0.8, 0.9 * k)
+  // 锁梁
+  ctx.beginPath()
+  ctx.arc(x + 3.5 * k, y + 3 * k, 1.9 * k, Math.PI, 0)
+  ctx.stroke()
+  // 锁体
+  roundRect(ctx, x + k, y + 3 * k, 5 * k, 4 * k, k)
+  ctx.fill()
+  ctx.restore()
 }
 
 const BLOCK_FILL: Record<string, string> = {
@@ -73,23 +92,19 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, W, H)
 
-  // 固定空位用的斜纹填充，和界面保持一致
+  // 不坐人用的斜纹填充：与画布、打印保持同一套细斜线
   const hatch = (() => {
     const c = document.createElement('canvas')
-    c.width = 8
-    c.height = 8
+    c.width = 7
+    c.height = 7
     const p = c.getContext('2d')!
-    p.fillStyle = '#F3F4F4'
-    p.fillRect(0, 0, 8, 8)
-    p.strokeStyle = '#E7E9E9'
-    p.lineWidth = 1
+    p.fillStyle = '#FAFBFC'
+    p.fillRect(0, 0, 7, 7)
+    p.strokeStyle = 'rgba(205, 210, 217, 0.9)'
+    p.lineWidth = 0.8
     p.beginPath()
-    p.moveTo(-2, 10)
-    p.lineTo(10, -2)
-    p.stroke()
-    p.beginPath()
-    p.moveTo(2, 10)
-    p.lineTo(10, 2)
+    p.moveTo(-1, 8)
+    p.lineTo(8, -1)
     p.stroke()
     return ctx.createPattern(c, 'repeat')!
   })()
@@ -165,11 +180,6 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
         ctx.fillStyle = hatch
         roundRect(ctx, seat.x, seat.y, seat.w, seat.h, 0)
         ctx.fill()
-        ctx.fillStyle = '#A5A299'
-        ctx.font = '400 10px "PingFang SC", "Microsoft YaHei", sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        if (seat.w > 34 && seat.h > 22) ctx.fillText('空置', seat.x + seat.w / 2, seat.y + seat.h / 2)
         continue
       }
       const isLeave = mode === 'seated' && a?.status === 'leave'
@@ -234,6 +244,10 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
         ctx.textAlign = 'left'
         ctx.textBaseline = 'top'
         ctx.fillText(`${no}`, seat.x + 3, seat.y + 1)
+      }
+      // 固定座位锁标识：与画布一致，图片与打印均保留
+      if (mode === 'seated' && opts.fixedSeats?.[seat.seatId] && seat.w >= 16) {
+        drawSeatLock(ctx, seat.x + seat.w - 9.5, seat.y + 2)
       }
     }
   }

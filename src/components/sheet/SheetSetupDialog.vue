@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import type { Sheet } from '../../types'
 import UiButton from '../../ui/components/UiButton.vue'
 import UiModal from '../../ui/components/UiModal.vue'
+import UiNumberInput from '../../ui/components/UiNumberInput.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -51,33 +52,33 @@ function submit(): void {
   <UiModal
     :model-value="modelValue"
     title="表格设置"
-    description="行列数变化会保留已有内容；缩小行列时超出范围的内容会被裁掉"
+    description="缩小行列会裁掉超出范围的内容"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div class="ss">
       <label class="ss-field">
         <span>行数</span>
-        <input v-model.number="rows" type="number" min="1" max="300" />
+        <UiNumberInput v-model="rows" width="100%" :min="1" :max="300" label="行数" />
       </label>
       <label class="ss-field">
         <span>列数</span>
-        <input v-model.number="cols" type="number" min="1" max="100" />
+        <UiNumberInput v-model="cols" width="100%" :min="1" :max="100" label="列数" />
       </label>
       <label class="ss-field">
         <span>默认列宽</span>
-        <input v-model.number="colWidth" type="number" min="48" max="600" />
+        <UiNumberInput v-model="colWidth" width="100%" :min="48" :max="600" unit="px" label="默认列宽" />
       </label>
       <label class="ss-field">
         <span>默认行高</span>
-        <input v-model.number="rowHeight" type="number" min="32" max="400" />
+        <UiNumberInput v-model="rowHeight" width="100%" :min="32" :max="400" unit="px" label="默认行高" />
       </label>
       <label class="ss-field">
         <span>冻结行</span>
-        <input v-model.number="frozenRows" type="number" min="0" max="5" />
+        <UiNumberInput v-model="frozenRows" width="100%" :min="0" :max="5" label="冻结行数" />
       </label>
       <label class="ss-field">
         <span>冻结列</span>
-        <input v-model.number="frozenCols" type="number" min="0" max="5" />
+        <UiNumberInput v-model="frozenCols" width="100%" :min="0" :max="5" label="冻结列数" />
       </label>
     </div>
     <template #footer>
@@ -90,10 +91,4 @@ function submit(): void {
 <style scoped>
 .ss { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ss-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
-.ss-field input {
-  height: 30px; padding: 0 8px; font-size: 12px; font-family: inherit;
-  border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
-  color: var(--text-primary); outline: none;
-}
-.ss-field input:focus { border-color: var(--primary); }
 </style>

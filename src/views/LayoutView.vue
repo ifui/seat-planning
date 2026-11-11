@@ -4,10 +4,11 @@
  * 数据模型：行列 → 单元格（座位 / 主席台 / 特殊块），排号与座号由格子决定。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { BorderSide, CellStyle, ElementKind, LayoutElement, LayoutPackage, SheetCell, ZoneDef } from '../types'
+import type { BorderSide, CellStyle, ElementKind, LayoutElement, LayoutPackage, Sheet, SheetCell } from '../types'
 import type { CellRange } from '../engine/sheet'
 import {
   addMerge,
+  anchorOf,
   blockRoleLabel,
   cellAt,
   clampSeats,
@@ -18,15 +19,18 @@ import {
   insertCols,
   insertRows,
   isCovered,
+  keyOf,
   mergeAt,
+  normalizeRange,
   normalizeSheet,
   nowISO,
   removeMerge,
+  seatsOfSheet,
   setCell,
   uid
 } from '../engine/sheet'
 import { deleteRows, deleteCols } from '../engine/sheet'
-import { loadAll, removeLayout, saveLayout, state } from '../store'
+import { loadAll, removeLayout, rosterOf, saveLayout, saveProject, state } from '../store'
 import { useLayoutHistory } from '../composables/useLayoutHistory'
 import SheetToolbar from '../components/sheet/SheetToolbar.vue'
 import SheetGrid from '../components/sheet/SheetGrid.vue'
@@ -51,6 +55,7 @@ import UiButton from '../ui/components/UiButton.vue'
 import UiDropdown from '../ui/components/UiDropdown.vue'
 import UiIconButton from '../ui/components/UiIconButton.vue'
 import UiModal from '../ui/components/UiModal.vue'
+import UiNumberInput from '../ui/components/UiNumberInput.vue'
 
 const current = ref<LayoutPackage | null>(null)
 const selection = ref<CellRange>({ r1: 0, c1: 0, r2: 0, c2: 0 })
@@ -475,11 +480,33 @@ function ensureIds(cell: SheetCell): void {
   cell.seatIds = ids
 }
 
+/**
+ * 遍历选区内真正可写的锚点格：点到合并块内部格时也归到锚点，
+ * 否则属性面板的区域/座位数等修改会被静默丢弃（合并块只有锚点存了内容）。
+ */
+function eachSelectedCell(
+  s: Sheet,
+  range: CellRange,
+  fn: (row: number, col: number, cell: SheetCell) => void
+): void {
+  const r = normalizeRange(range)
+  const seen = new Set<string>()
+  for (let row = r.r1; row <= r.r2; row++) {
+    for (let col = r.c1; col <= r.c2; col++) {
+      const a = anchorOf(s, row, col)
+      const key = keyOf(a.row, a.col)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const cell = cellAt(s, a.row, a.col)
+      if (cell) fn(a.row, a.col, cell)
+    }
+  }
+}
+
 function patchCell(patch: Partial<SheetCell>): void {
   if (!current.value) return
   const s = current.value.sheet
-  eachCell(s, range.value, (row, col, cell) => {
-    if (!cell) return
+  eachSelectedCell(s, range.value, (row, col, cell) => {
     const next: SheetCell = { ...cell, ...patch }
     setCell(s, row, col, next)
   })
@@ -493,27 +520,13 @@ function patchCell(patch: Partial<SheetCell>): void {
 function patchStyle(patch: CellStyle, preview = false): void {
   if (!current.value) return
   const s = current.value.sheet
-  eachCell(s, range.value, (row, col, cell) => {
-    if (!cell) return
+  eachSelectedCell(s, range.value, (row, col, cell) => {
     setCell(s, row, col, { ...cell, style: { ...(cell.style ?? {}), ...patch } })
   })
   if (preview) {
     markDirty()
     return
   }
-  commit()
-}
-
-function assignZone(zoneId: string): void {
-  if (!current.value) return
-  const s = current.value.sheet
-  eachCell(s, range.value, (row, col, cell) => {
-    if (!cell) return
-    const next: SheetCell = { ...cell }
-    if (zoneId) next.zoneId = zoneId
-    else delete next.zoneId
-    setCell(s, row, col, next)
-  })
   commit()
 }
 
@@ -594,6 +607,166 @@ function removeCols(): void {
   shiftElementAnchors(current.value.elements, s, { axis: 'col', at: range.value.c1, count: n, remove: true })
   selection.value = { r1: range.value.r1, c1: Math.min(range.value.c1, s.cols - 1), r2: range.value.r2, c2: Math.min(range.value.c1, s.cols - 1) }
   commit()
+}
+
+// ---------- 行号 / 列标右键：按表头坐标插入、删除 ----------
+
+const hctx = ref<{ open: boolean; x: number; y: number; axis: 'row' | 'col'; index: number }>({
+  open: false, x: 0, y: 0, axis: 'row', index: 0
+})
+
+function onHeaderContext(p: { x: number; y: number; axis: 'row' | 'col'; index: number }): void {
+  hctx.value = { ...p, open: true }
+}
+
+function headerRun(fn: () => void): void {
+  hctx.value.open = false
+  fn()
+}
+
+const nDialog = ref<{ axis: 'row' | 'col'; side: 'before' | 'after'; index: number } | null>(null)
+const nCount = ref(2)
+const nDialogOpen = computed({
+  get: () => !!nDialog.value,
+  set: (v: boolean) => { if (!v) nDialog.value = null }
+})
+const nDialogTitle = computed(() => {
+  const d = nDialog.value
+  if (!d) return '插入'
+  const side = d.side === 'before'
+    ? (d.axis === 'row' ? '上方' : '左侧')
+    : (d.axis === 'row' ? '下方' : '右侧')
+  return `在${side}插入${d.axis === 'row' ? '行' : '列'}`
+})
+
+function openInsertN(axis: 'row' | 'col', side: 'before' | 'after', index: number): void {
+  nCount.value = 2
+  nDialog.value = { axis, side, index }
+}
+
+/** 在第 index 行/列的前（before）或后（after）插入 count 条；插入后选中新插入的整行/整列 */
+function insertAt(axis: 'row' | 'col', index: number, side: 'before' | 'after', count: number): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  const n = Math.max(1, Math.min(50, Math.round(count) || 1))
+  const at = side === 'before' ? index : index + 1
+  if (axis === 'row') {
+    insertRows(s, at, n)
+    shiftElementAnchors(current.value.elements, s, { axis: 'row', at, count: n, remove: false })
+    selection.value = { r1: at, c1: 0, r2: Math.min(at + n - 1, s.rows - 1), c2: s.cols - 1 }
+    active.value = { row: at, col: 0 }
+  } else {
+    insertCols(s, at, n)
+    shiftElementAnchors(current.value.elements, s, { axis: 'col', at, count: n, remove: false })
+    selection.value = { r1: 0, c1: at, r2: s.rows - 1, c2: Math.min(at + n - 1, s.cols - 1) }
+    active.value = { row: 0, col: at }
+  }
+  commit()
+}
+
+function confirmInsertN(): void {
+  const d = nDialog.value
+  if (!d) return
+  insertAt(d.axis, d.index, d.side, nCount.value)
+  nDialog.value = null
+}
+
+function deleteHeaderLine(axis: 'row' | 'col', index: number): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  if (axis === 'row') {
+    if (s.rows <= 1) { toast('至少要保留一行'); return }
+    deleteRows(s, index, 1)
+    shiftElementAnchors(current.value.elements, s, { axis: 'row', at: index, count: 1, remove: true })
+    const r = Math.min(index, s.rows - 1)
+    selection.value = { r1: r, c1: 0, r2: r, c2: s.cols - 1 }
+    active.value = { row: r, col: 0 }
+  } else {
+    if (s.cols <= 1) { toast('至少要保留一列'); return }
+    deleteCols(s, index, 1)
+    shiftElementAnchors(current.value.elements, s, { axis: 'col', at: index, count: 1, remove: true })
+    const c = Math.min(index, s.cols - 1)
+    selection.value = { r1: 0, c1: c, r2: s.rows - 1, c2: c }
+    active.value = { row: 0, col: c }
+  }
+  commit()
+}
+
+interface DeleteImpact {
+  projectId: string
+  projectName: string
+  memberIds: string[]
+  names: string[]
+}
+
+const delDialog = ref<{
+  axis: 'row' | 'col'
+  index: number
+  seats: number
+  impacts: DeleteImpact[]
+} | null>(null)
+const delDialogOpen = computed({
+  get: () => !!delDialog.value,
+  set: (v: boolean) => { if (!v) delDialog.value = null }
+})
+const delDialogTitle = computed(() => {
+  const d = delDialog.value
+  if (!d) return '删除'
+  return d.axis === 'row' ? `删除第 ${d.index + 1} 行` : `删除第 ${d.index + 1} 列`
+})
+/** 删除会失去座位的已排人员总数 */
+const delPeopleCount = computed(() =>
+  (delDialog.value?.impacts ?? []).reduce((n, x) => n + x.memberIds.length, 0)
+)
+
+/** 删除前的二次确认：布局本身的删除可用撤销恢复，但已排人员的座位被移除后无法自动还原 */
+function askDeleteHeaderLine(axis: 'row' | 'col', index: number): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  if (axis === 'row' && s.rows <= 1) { toast('至少要保留一行'); return }
+  if (axis === 'col' && s.cols <= 1) { toast('至少要保留一列'); return }
+  const seats = seatsOfSheet(s).filter((x) => (axis === 'row' ? x.row === index : x.col === index))
+  const seatIds = new Set(seats.map((x) => x.seatId))
+  const impacts: DeleteImpact[] = []
+  for (const p of state.projects) {
+    if (p.layoutPackageId !== current.value.id) continue
+    const hit = p.assignments.filter((a) => seatIds.has(a.seatId))
+    if (!hit.length) continue
+    const roster = rosterOf(p)
+    const nameOf = new Map((roster?.members ?? []).map((m) => [m.id, m.name]))
+    impacts.push({
+      projectId: p.id,
+      projectName: p.name,
+      memberIds: hit.map((a) => a.memberId),
+      names: hit.map((a) => nameOf.get(a.memberId) ?? '未知')
+    })
+  }
+  delDialog.value = { axis, index, seats: seatIds.size, impacts }
+}
+
+/** 确认删除：先清理受影响项目里指向被删座位的分配，再执行结构删除 */
+async function confirmDeleteHeaderLine(): Promise<void> {
+  const d = delDialog.value
+  if (!d || !current.value) return
+  delDialog.value = null
+  const s = current.value.sheet
+  const seatIds = new Set(
+    seatsOfSheet(s)
+      .filter((x) => (d.axis === 'row' ? x.row === d.index : x.col === d.index))
+      .map((x) => x.seatId)
+  )
+  const notes: string[] = []
+  for (const impact of d.impacts) {
+    const p = state.projects.find((x) => x.id === impact.projectId)
+    if (!p) continue
+    p.assignments = p.assignments.filter((a) => !seatIds.has(a.seatId))
+    p.unassigned = [...new Set([...p.unassigned, ...impact.memberIds])]
+    await saveProject(p)
+    const shown = impact.names.slice(0, 3).join('、') + (impact.names.length > 3 ? ' 等' : '')
+    notes.push(`${impact.projectName} ${impact.names.length} 人（${shown}）`)
+  }
+  deleteHeaderLine(d.axis, d.index)
+  if (notes.length) toast(`已删除，${notes.join('；')} 被移出座位`)
 }
 
 function clearSelection(): void {
@@ -842,7 +1015,7 @@ function onEdit(p: { row: number; col: number; text: string }): void {
   commit()
 }
 
-function onFill(payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string; zoneId: string }): void {
+function onFill(payload: { kind: 'seat' | 'podium'; seats: number; tablePerRow: boolean; tableLabel: string }): void {
   if (!current.value) return
   const n = fillSeats(current.value.sheet, range.value, payload)
   commit()
@@ -873,112 +1046,6 @@ function applySetup(v: { rows: number; cols: number; colWidth: number; rowHeight
   toast('表格尺寸已更新')
 }
 
-// ---------- 区域 ----------
-
-const ZONE_COLORS = ['#DCE4EE', '#EDF1F5', '#E8EFE9', '#F3EDE6', '#F0EAEF', '#E9EEF2']
-
-function addZone(): void {
-  if (!current.value) return
-  const n = current.value.zones.length + 1
-  const zone: ZoneDef = {
-    id: `zone-${Date.now().toString(36)}`,
-    name: `区域 ${n}`,
-    color: ZONE_COLORS[(n - 1) % ZONE_COLORS.length]
-  }
-  current.value.zones.push(zone)
-  markDirty()
-}
-
-// 区域重命名：引用全部走 id，改名后各处的名称自动同步
-const zoneRenameOpen = ref(false)
-const zoneRenameId = ref('')
-const zoneRenameName = ref('')
-
-function openZoneRename(id: string): void {
-  const z = current.value?.zones.find((v) => v.id === id)
-  if (!z) return
-  zoneRenameId.value = id
-  zoneRenameName.value = z.name
-  zoneRenameOpen.value = true
-}
-
-function confirmZoneRename(): void {
-  const name = zoneRenameName.value.trim()
-  if (!name) {
-    toast('请填写区域名称')
-    return
-  }
-  const z = current.value?.zones.find((v) => v.id === zoneRenameId.value)
-  if (!z) return
-  z.name = name
-  zoneRenameOpen.value = false
-  commit()
-  toast('区域已重命名')
-}
-
-function deleteZone(id: string): void {
-  if (!current.value) return
-  const s = current.value.sheet
-  current.value.zones = current.value.zones.filter((z) => z.id !== id)
-  if (focusZoneId.value === id) focusZoneId.value = ''
-  for (const [k, cell] of Object.entries(s.cells)) {
-    if (cell.zoneId !== id) continue
-    const next = { ...cell }
-    delete next.zoneId
-    s.cells[k] = next
-  }
-  markDirty()
-}
-
-/** 区域管理 → 画布反向高亮；再点一次取消 */
-const focusZoneId = ref('')
-const zoneHighlight = computed(() => {
-  const z = current.value?.zones.find((v) => v.id === focusZoneId.value)
-  return z ? { id: z.id, color: z.color } : null
-})
-
-function toggleZoneFocus(id: string): void {
-  focusZoneId.value = focusZoneId.value === id ? '' : id
-}
-
-// ---------- 区域分配模式：选中目标区域后，在画布上点/拖即可连续分配 ----------
-const assignZoneId = ref('')
-const assignZoneName = computed(
-  () => current.value?.zones.find((z) => z.id === assignZoneId.value)?.name ?? ''
-)
-let assignTimer = 0
-
-function startZoneAssign(zoneId: string): void {
-  if (!current.value) return
-  if (!current.value.zones.some((z) => z.id === zoneId)) return
-  assignZoneId.value = zoneId
-  assignZone(zoneId)
-}
-
-function stopZoneAssign(): void {
-  assignZoneId.value = ''
-  window.clearTimeout(assignTimer)
-}
-
-function createZoneAndAssign(): void {
-  addZone()
-  const zones = current.value?.zones
-  const z = zones?.[zones.length - 1]
-  if (z) startZoneAssign(z.id)
-}
-
-watch(
-  selection,
-  () => {
-    if (!assignZoneId.value) return
-    window.clearTimeout(assignTimer)
-    assignTimer = window.setTimeout(() => {
-      if (assignZoneId.value) assignZone(assignZoneId.value)
-    }, 140)
-  },
-  { deep: true }
-)
-
 function onGlobalKey(e: KeyboardEvent): void {
   const target = e.target as HTMLElement | null
   const typing = !!target && (
@@ -1001,17 +1068,7 @@ function onGlobalKey(e: KeyboardEvent): void {
       return
     }
   }
-  if (e.key !== 'Escape' || !assignZoneId.value) return
-  e.preventDefault()
-  stopZoneAssign()
 }
-
-watch(
-  () => current.value?.id,
-  () => {
-    focusZoneId.value = ''
-  }
-)
 
 // ---------- 右键菜单 ----------
 
@@ -1115,10 +1172,6 @@ function onCommand(cmd: string): void {
         @import="onImportClick"
         @undo="onCommand('undo')"
         @redo="onCommand('redo')"
-        @insert-row="insertRow"
-        @delete-row="removeRows"
-        @insert-col="insertCol"
-        @delete-col="removeCols"
         @merge="mergeSelection"
         @unmerge="unmergeSelection"
         @type="setType"
@@ -1133,13 +1186,13 @@ function onCommand(cmd: string): void {
           :sheet="sheet"
           :selection="selection"
           :active="active"
-          :zone-highlight="zoneHighlight"
           :elements="current.elements"
           :selected-element-id="selectedElementId"
           @update:selection="onSelectionChange"
           @update:active="active = $event"
           @commit="commit"
           @context="onContext"
+          @header-context="onHeaderContext"
           @edit="onEdit"
           @command="onCommand"
           @element-select="selectElement"
@@ -1162,34 +1215,21 @@ function onCommand(cmd: string): void {
           :sheet="sheet"
           :selection="selection"
           :active="active"
-          :zones="current.zones"
-          :highlight-zone-id="focusZoneId"
           @patch="patchCell"
           @style="patchStyle"
           @preview-style="(p) => patchStyle(p, true)"
-          @select-zone="assignZone"
-          @focus-zone="toggleZoneFocus"
-          @add-zone="addZone"
-          @delete-zone="deleteZone"
-          @rename-zone="openZoneRename"
         />
-        <div v-if="assignZoneId" class="lv-assign-hint">
-          <span>正在分配区域：{{ assignZoneName }}</span>
-          <span class="lv-assign-esc">按 Esc 退出</span>
-          <button type="button" class="lv-assign-close" title="退出区域分配" @click="stopZoneAssign">×</button>
-        </div>
       </div>
     </div>
 
     <div v-else class="lv-empty">正在加载布局…</div>
 
-    <FillDialog v-model="fillOpen" :range-label="selectionLabel" :zones="current?.zones ?? []" @fill="onFill" />
+    <FillDialog v-model="fillOpen" :range-label="selectionLabel" @fill="onFill" />
     <SheetSetupDialog v-if="current" v-model="setupOpen" :sheet="sheet" @apply="applySetup" />
 
     <UiModal
       v-model="renameOpen"
       title="重命名布局"
-      description="只修改名称，布局内容不受影响。"
       width="420px"
     >
       <label class="lv-field">
@@ -1215,25 +1255,78 @@ function onCommand(cmd: string): void {
       </template>
     </UiModal>
 
+    <!-- 行号 / 列标右键：行列结构操作 -->
+    <UiContextMenu :open="hctx.open" :x="hctx.x" :y="hctx.y" @close="hctx.open = false">
+      <div class="ctx-label">{{ hctx.axis === 'row' ? `第 ${hctx.index + 1} 行` : `第 ${hctx.index + 1} 列` }}</div>
+      <template v-if="hctx.axis === 'row'">
+        <UiMenuItem icon="plus" label="在上方插入 1 行" @click="headerRun(() => insertAt('row', hctx.index, 'before', 1))" />
+        <UiMenuItem icon="plus" label="在下方插入 1 行" @click="headerRun(() => insertAt('row', hctx.index, 'after', 1))" />
+        <UiMenuItem icon="plus" label="在上方插入 N 行…" @click="headerRun(() => openInsertN('row', 'before', hctx.index))" />
+        <UiMenuItem icon="plus" label="在下方插入 N 行…" @click="headerRun(() => openInsertN('row', 'after', hctx.index))" />
+        <div class="ctx-sep" />
+        <UiMenuItem
+          icon="minus"
+          label="删除当前行"
+          danger
+          :disabled="!current || current.sheet.rows <= 1"
+          @click="headerRun(() => askDeleteHeaderLine('row', hctx.index))"
+        />
+      </template>
+      <template v-else>
+        <UiMenuItem icon="plus" label="在左侧插入 1 列" @click="headerRun(() => insertAt('col', hctx.index, 'before', 1))" />
+        <UiMenuItem icon="plus" label="在右侧插入 1 列" @click="headerRun(() => insertAt('col', hctx.index, 'after', 1))" />
+        <UiMenuItem icon="plus" label="在左侧插入 N 列…" @click="headerRun(() => openInsertN('col', 'before', hctx.index))" />
+        <UiMenuItem icon="plus" label="在右侧插入 N 列…" @click="headerRun(() => openInsertN('col', 'after', hctx.index))" />
+        <div class="ctx-sep" />
+        <UiMenuItem
+          icon="minus"
+          label="删除当前列"
+          danger
+          :disabled="!current || current.sheet.cols <= 1"
+          @click="headerRun(() => askDeleteHeaderLine('col', hctx.index))"
+        />
+      </template>
+    </UiContextMenu>
+
     <UiModal
-      v-model="zoneRenameOpen"
-      title="重命名区域"
-      description="改名后，区域规则、区域分配等处引用的名称会同步更新。"
-      width="420px"
+      v-model="nDialogOpen"
+      :title="nDialogTitle"
+      description="输入要插入的数量，必须是 1–50 的整数。"
+      width="360px"
     >
       <label class="lv-field">
-        <span>区域名称</span>
-        <input
-          v-model="zoneRenameName"
-          class="lv-input"
-          maxlength="20"
-          autofocus
-          @keydown.enter="confirmZoneRename"
-        />
+        <span>数量</span>
+        <UiNumberInput v-model="nCount" width="100%" :min="1" :max="50" unit="条" :label="nDialogTitle" />
       </label>
       <template #footer>
-        <UiButton variant="ghost" size="sm" @click="zoneRenameOpen = false">取消</UiButton>
-        <UiButton variant="primary" size="sm" @click="confirmZoneRename">保存</UiButton>
+        <UiButton variant="ghost" size="sm" @click="nDialogOpen = false">取消</UiButton>
+        <UiButton variant="primary" size="sm" @click="confirmInsertN">插入</UiButton>
+      </template>
+    </UiModal>
+
+    <UiModal
+      v-model="delDialogOpen"
+      :title="delDialogTitle"
+      width="420px"
+    >
+      <div class="lv-fields">
+        <p class="del-warn">
+          删除会移除该{{ delDialog?.axis === 'row' ? '行' : '列' }}的 {{ delDialog?.seats ?? 0 }} 个座位，已排人员不会自动还原。
+        </p>
+        <template v-if="delPeopleCount">
+          <p class="del-warn del-warn-strong">
+            以下 {{ delPeopleCount }} 位已排座人员将被移出座位：
+          </p>
+          <ul class="del-list">
+            <li v-for="x in delDialog?.impacts ?? []" :key="x.projectId">
+              {{ x.projectName }}：{{ x.names.slice(0, 6).join('、') }}<template v-if="x.names.length > 6"> 等 {{ x.names.length }} 人</template>
+            </li>
+          </ul>
+        </template>
+      </div>
+      <template #footer>
+        <UiButton variant="ghost" size="sm" @click="delDialogOpen = false">取消</UiButton>
+        <UiButton variant="danger" size="sm" @click="confirmDeleteHeaderLine">确认删除</UiButton>
       </template>
     </UiModal>
 
@@ -1253,17 +1346,6 @@ function onCommand(cmd: string): void {
       <UiMenuItem icon="seat" label="设为座位" @click="ctxRun(() => setType('seat'))" />
       <UiMenuItem icon="podium" label="设为主席台" @click="ctxRun(() => setType('podium'))" />
       <UiMenuItem icon="aisle" label="设为过道（不坐人）" @click="ctxRun(() => setType('block', 'aisle'))" />
-      <div class="ctx-sep" />
-      <div class="ctx-label">区域分配</div>
-      <UiMenuItem
-        v-for="z in current?.zones ?? []"
-        :key="z.id"
-        icon="zone"
-        :label="z.name"
-        @click="ctxRun(() => startZoneAssign(z.id))"
-      />
-      <UiMenuItem icon="plus" label="新建区域并分配" @click="ctxRun(createZoneAndAssign)" />
-      <UiMenuItem v-if="assignZoneId" icon="close" label="退出区域分配" @click="ctxRun(stopZoneAssign)" />
     </UiContextMenu>
 
     <input ref="fileInput" type="file" accept="application/json,.json" class="lv-file" @change="onImportFile" />
@@ -1294,33 +1376,23 @@ function onCommand(cmd: string): void {
 .lv-menu-title { padding: 6px 10px 4px; font-size: 10.5px; color: var(--text-disabled); }
 .lv-menu-empty { padding: 10px; text-align: center; font-size: 11.5px; color: var(--text-muted); }
 
-.lv-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-.lv-work { position: relative; flex: 1; min-height: 0; display: flex; gap: 8px; }
+.lv-main { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.lv-work { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; gap: 8px; }
+/* 右侧属性面板常驻固定宽度；左侧画布吃掉剩余空间，窗口变窄时只压缩画布 */
+.lv-work > :deep(.sheet-grid) { flex: 1 1 auto; width: 0; min-width: 0; }
+.lv-work > :deep(.insp-panel) { flex: 0 0 244px; width: 244px; min-width: 244px; }
 .lv-empty { flex: 1; display: grid; place-items: center; color: var(--text-muted); font-size: 12px; }
 
 .lv-file { display: none; }
 .ctx-sep { height: 1px; background: var(--border-soft); margin: 4px 8px; }
 .ctx-label { padding: 5px 10px 3px; font-size: 10.5px; color: var(--text-disabled); }
 
-/* 区域分配模式提示：左下角小字，弱化，不抢画布内容 */
-.lv-assign-hint {
-  position: absolute; left: 14px; bottom: 42px; z-index: 20;
-  display: inline-flex; align-items: center; gap: 8px;
-  max-width: calc(100% - 300px);
-  padding: 3px 5px 3px 9px; border: 1px solid var(--border-soft); border-radius: 5px;
-  background: var(--bg); color: var(--text-muted);
-  font-size: 10.5px; line-height: 1.5; letter-spacing: .01em;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
-  pointer-events: none;
-}
-.lv-assign-esc { color: var(--text-disabled); }
-.lv-assign-close {
-  pointer-events: auto; flex: none; width: 16px; height: 16px; padding: 0;
-  border: none; border-radius: 3px; background: none; color: var(--text-disabled);
-  font-size: 13px; line-height: 1; cursor: pointer;
-}
-.lv-assign-close:hover { background: var(--bg-hover); color: var(--text-secondary); }
+/* 区域管理已整体迁移到排座项目，布局页不再提供区域入口 */
 
+.lv-fields { display: flex; flex-direction: column; gap: 14px; }
+.del-warn { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--text-secondary); }
+.del-warn-strong { color: var(--danger, #c0392b); font-weight: 600; }
+.del-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.8; color: var(--text-secondary); }
 .lv-field { display: flex; flex-direction: column; gap: 6px; }
 .lv-field > span { font-size: 11px; color: var(--text-muted); }
 .lv-input {

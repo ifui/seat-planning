@@ -353,16 +353,14 @@ const borderStyle = ref<'solid' | 'dashed' | 'dotted'>('solid')
 const borderWidth = ref(1)
 const borderColor = ref('#333333')
 
-/**
- * 快捷边框：一次点击把选区整体加上对应边；若选区内这些边都已存在，则再点一次取消。
- * 只写数据层（style.borders），渲染与导出都按这份数据画线。
- */
-function applyBorder(kind: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom' | 'none'): void {
-  if (!current.value) return
-  const s = current.value.sheet
-  const r = range.value
-  const targets: { row: number; col: number; cell: SheetCell; sides: BorderSide[] }[] = []
+type BorderKind = 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom' | 'none'
+const ALL_SIDES: BorderSide[] = ['top', 'right', 'bottom', 'left']
 
+interface BorderTarget { row: number; col: number; cell: SheetCell; sides: BorderSide[] }
+
+/** 快捷边框的目标格子与本次要处理的边；合并块只算锚点格，边按整块边界算 */
+function borderTargets(s: Sheet, r: CellRange, kind: BorderKind): BorderTarget[] {
+  const targets: BorderTarget[] = []
   eachCell(s, r, (row, col, cell) => {
     if (!cell) return
     const m = mergeAt(s, row, col)
@@ -371,7 +369,7 @@ function applyBorder(kind: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom'
     const colSpan = m?.colSpan ?? 1
     let sides: BorderSide[]
     if (kind === 'none' || kind === 'all') {
-      sides = ['top', 'right', 'bottom', 'left']
+      sides = [...ALL_SIDES]
     } else if (kind === 'outer') {
       sides = []
       if (row === r.r1) sides.push('top')
@@ -383,29 +381,78 @@ function applyBorder(kind: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom'
     }
     if (sides.length) targets.push({ row, col, cell, sides })
   })
+  return targets
+}
+
+const borderHas = (t: BorderTarget, side: BorderSide): boolean => !!t.cell.style?.borders?.includes(side)
+
+/**
+ * 快捷边框的选中态：跟着选区与数据实时算，点完能看出当前是哪一种。
+ * - all：所有目标格四边齐全；
+ * - outer：外圈齐全但还不到四边齐全（与 all 互斥，避免同时点亮）；
+ * - left/right/top/bottom：所有目标格都有这一边（外圈/四边成立时不再重复点亮）；
+ * - none：所有目标格都是显式无框（borders: []）。
+ */
+const borderActive = computed<BorderKind[]>(() => {
+  const s = current.value?.sheet
+  if (!s) return []
+  const r = range.value
+  const all = borderTargets(s, r, 'all')
+  const outer = borderTargets(s, r, 'outer')
+  const none = borderTargets(s, r, 'none')
+  const allOn = all.length > 0 && all.every((t) => ALL_SIDES.every((side) => borderHas(t, side)))
+  const outerOn = outer.length > 0 && outer.every((t) => t.sides.every((side) => borderHas(t, side)))
+  const active: BorderKind[] = []
+  if (allOn) active.push('all')
+  else if (outerOn) active.push('outer')
+  else {
+    for (const side of ALL_SIDES) {
+      const targets = borderTargets(s, r, side)
+      if (targets.length && targets.every((t) => borderHas(t, side))) active.push(side)
+    }
+  }
+  if (none.length > 0 && none.every((t) => t.cell.style?.borders?.length === 0)) active.push('none')
+  return active
+})
+
+/**
+ * 快捷边框：一次点击把选区整体加上对应边；若选区内这些边都已存在，则再点一次取消。
+ * 取消 = 删掉 borders 字段回到默认黑框；显式无框只由「清除边框」写入 borders: []。
+ */
+function applyBorder(kind: BorderKind): void {
+  if (!current.value) return
+  const s = current.value.sheet
+  const targets = borderTargets(s, range.value, kind)
   if (!targets.length) return
 
-  const has = (c: SheetCell, side: BorderSide): boolean => !!c.style?.borders?.includes(side)
-  const allSet = targets.every((t) => t.sides.every((side) => has(t.cell, side)))
-
+  const remove = kind === 'none' || targets.every((t) => t.sides.every((side) => borderHas(t, side)))
   for (const t of targets) {
-    const next = new Set<BorderSide>(t.cell.style?.borders ?? [])
-    for (const side of t.sides) {
-      if (allSet || kind === 'none') next.delete(side)
-      else next.add(side)
-    }
-    const borders = (['top', 'right', 'bottom', 'left'] as BorderSide[]).filter((side) => next.has(side))
-    setCell(s, t.row, t.col, {
-      ...t.cell,
-      style: {
-        ...(t.cell.style ?? {}),
-        strokeStyle: borderStyle.value,
-        strokeWidth: borderWidth.value,
-        stroke: borderColor.value,
-        // 空数组表示「显式清除」，与未设置（默认黑框）区分
-        borders
+    const style: CellStyle = { ...(t.cell.style ?? {}) }
+    if (remove) {
+      const next = new Set<BorderSide>(t.cell.style?.borders ?? [])
+      for (const side of t.sides) next.delete(side)
+      const borders = ALL_SIDES.filter((side) => next.has(side))
+      if (!borders.length && kind !== 'none') {
+        // 取消：回到「未设置」，渲染层会重新画默认黑框
+        delete style.borders
+        delete style.strokeStyle
+        delete style.strokeWidth
+        delete style.stroke
+      } else {
+        style.borders = borders
       }
-    })
+    } else {
+      const next = new Set<BorderSide>(t.cell.style?.borders ?? [])
+      for (const side of t.sides) next.add(side)
+      style.borders = ALL_SIDES.filter((side) => next.has(side))
+      style.strokeStyle = borderStyle.value
+      style.strokeWidth = borderWidth.value
+      style.stroke = borderColor.value
+    }
+    const patch: SheetCell = { ...t.cell }
+    if (Object.keys(style).length) patch.style = style
+    else delete patch.style
+    setCell(s, t.row, t.col, patch)
   }
   commit()
 }
@@ -1159,6 +1206,7 @@ function onCommand(cmd: string): void {
         :border-style="borderStyle"
         :border-width="borderWidth"
         :border-color="borderColor"
+        :border-active="borderActive"
         @border="applyBorder"
         @update:border-style="setBorderStyle"
         @update:border-width="setBorderWidth"

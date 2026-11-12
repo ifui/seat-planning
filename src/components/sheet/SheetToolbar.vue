@@ -14,6 +14,8 @@ defineProps<{
   borderStyle: 'solid' | 'dashed' | 'dotted'
   borderWidth: number
   borderColor: string
+  /** 当前选区已生效的快捷边框，由布局页按数据实时计算 */
+  borderActive: string[]
 }>()
 
 const quickBorders: { value: 'outer' | 'all' | 'left' | 'right' | 'top' | 'bottom' | 'none'; label: string }[] = [
@@ -104,7 +106,8 @@ const emit = defineEmits<{
                 :key="q.value"
                 type="button"
                 class="bd-chip"
-                :class="{ 'is-danger': q.value === 'none' }"
+                :class="{ 'is-on': borderActive.includes(q.value), 'is-danger': q.value === 'none' }"
+                :aria-pressed="borderActive.includes(q.value)"
                 @click="emit('border', q.value)"
               >{{ q.label }}</button>
             </div>

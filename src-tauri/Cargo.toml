@@ -19,3 +19,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# 去掉符号表压缩安装包体积（AppImage 的大头是捆绑的 webkit2gtk，不是本二进制）
+strip = true

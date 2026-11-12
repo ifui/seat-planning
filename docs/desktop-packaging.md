@@ -17,9 +17,9 @@ npm run desktop:build    # 类型检查 + 构建单文件 dist + 出安装包
 
 | 文件 | 实测体积 |
 |---|---|
-| `msi/SeatPlanning_0.1.0_x64_en-US.msi` | **3,203,072 字节 ≈ 3.05 MB** |
-| `nsis/SeatPlanning_0.1.0_x64-setup.exe` | **2,399,475 字节 ≈ 2.29 MB** |
-| 安装后主程序 `SeatPlanning.exe` | 6,137,344 字节 ≈ 5.85 MB |
+| `msi/座位编排_0.1.0_x64_zh-CN.msi` | **3,194,880 字节 ≈ 3.05 MB** |
+| `nsis/座位编排_0.1.0_x64-setup.exe` | **2,399,146 字节 ≈ 2.29 MB** |
+| 安装后主程序 `座位编排.exe` | 6,127,104 字节 ≈ 5.84 MB |
 
 对比：上一版用 `offlineInstaller` 时为 **MSI 208.3 MB / EXE 210 MB**。体积差全部来自内嵌的 WebView2 完整运行时，与应用代码无关。
 
@@ -131,11 +131,11 @@ WebView2 运行时 **109 是最后一个支持 Windows 7 / 8 / 8.1 的版本**�
 
 **方案 B：固定运行时（fixed runtime）**
 
-1. 下载 109 的 Fixed Version `.cab`，解压到固定目录，例如 `C:\Program Files\SeatPlanning\WebView2-109\`（目录内应直接看到 `msedgewebview2.exe`）。
+1. 下载 109 的 Fixed Version `.cab`，解压到固定目录，例如 `C:\Program Files\座位编排\WebView2-109\`（目录内应直接看到 `msedgewebview2.exe`）。
 2. 启动应用前设置环境变量，指向该目录：
 
    ```bat
-   set WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=C:\Program Files\SeatPlanning\WebView2-109
+   set WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=C:\Program Files\座位编排\WebView2-109
    ```
 
    通过快捷方式 / 启动脚本设置，或用 `setx` 写入用户环境变量。Tauri 1.8.3 在创建 WebView 时会读取该变量。
@@ -187,13 +187,14 @@ npx tauri icon src-tauri/app-icon.png -o src-tauri/icons
 | job | 工具链 | 说明 |
 |---|---|---|
 | `build-windows-x64` | stable（`RUSTUP_TOOLCHAIN: stable` 覆盖 rust-toolchain.toml） | Win10/11 包 |
-| `build-windows-x64-win7` | **1.77.2** | Win7/8.x 兼容包，产物重命名为 `*-win7-setup.exe` / `*-en-US-win7.msi` |
+| `build-windows-x64-win7` | **1.77.2** | Win7/8.x 兼容包，产物重命名为 `*-win7-setup.exe` / `*-win7.msi` |
 | `build-macos-universal` | stable | 未签名、不公证 |
-| `build-linux-x64` | stable | `.deb` / `.AppImage` |
-| `release` | — | tag 触发，汇总四个 job 的产物发布 |
+| `build-linux-x64` | stable | `.deb` / `.AppImage`，用 `--config` 把 productName 覆盖为 ASCII（deb 包名限制） |
+| `build-linux-arm64` | 1.77.2（容器内） | arm64 runner + focal 容器，`.deb` / `.AppImage` |
+| `release` | — | tag 触发，汇总五个 job 的产物，逐个文件挂载 Release |
 
 - 两个 Windows job 使用同一份源码与同一份 `Cargo.lock`，只有 Rust 工具链不同。
-- 全程无签名步骤；`release` 里 `fail_on_unmatched_files: false`，某个平台缺产物不会阻断发布。
+- 全程无签名步骤；`release` 里 `fail_on_unmatched_files: true`，缺任一产物会直接失败（逐个文件挂载 Release，不允许静默漏包）。
 - 缓存 key 按工具链区分（`windows-x64-modern` / `windows-x64-win7`），避免两种工具链共用 target 缓存。
 
 ## 7. Win7 部署检查单
@@ -201,5 +202,5 @@ npx tauri icon src-tauri/app-icon.png -o src-tauri/icons
 1. Windows 7 **SP1** + SHA-2 补丁（KB4474419）+ UCRT（KB2999226）。
 2. 安装 **VC++ 2015–2022 x64 运行库**。
 3. 安装 **WebView2 运行时 109**（离线包），或按 3.3 方案 B 配置固定运行时目录与环境变量。
-4. 再安装 `SeatPlanning_0.1.0_x64-win7-setup.exe`（或对应 MSI）。
+4. 再安装 `座位编排_0.1.0_x64-win7-setup.exe`（或对应 MSI）。
 5. 首次启动若报缺少运行时，先回查第 3 步是否装的是 **109**，而不是更新的版本。

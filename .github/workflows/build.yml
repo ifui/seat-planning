@@ -82,8 +82,9 @@ jobs:
             Copy-Item $_.FullName (Join-Path $nsis ($_.Name -replace '-setup\.exe$', '-win7-setup.exe'))
           }
           $msi = 'src-tauri/target/release/bundle/msi'
+          # MSI 文件名带语言后缀
           Get-ChildItem $msi -Filter *.msi | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $msi ($_.Name -replace '_en-US\.msi$', '_en-US-win7.msi'))
+            Copy-Item $_.FullName (Join-Path $msi ($_.Name -replace '_[a-z]{2}-[A-Z]{2}\.msi$', '-win7.msi'))
           }
 
       - name: 上传 Win7 兼容产物
@@ -169,11 +170,13 @@ jobs:
           cache: npm
 
       - name: 安装依赖并构建
+        # deb 的 Package 字段和 /usr/bin 下的可执行文件名都取自 productName，
+        # Debian 只允许小写 ASCII，故 Linux 侧用英文名打包（桌面显示名由 desktopTemplate 提供中文）
         env:
           RUSTUP_TOOLCHAIN: stable
         run: |
           npm ci
-          npm run tauri build
+          npm run tauri build -- --config '{"package":{"productName":"SeatPlanning"}}'
 
       - name: 上传 Linux 产物
         uses: actions/upload-artifact@v4
@@ -233,9 +236,19 @@ jobs:
           cache: npm
 
       - name: 安装依赖并构建
+        # 同 linux-x64：deb 包名必须是 ASCII，Linux 侧用英文名打包
         run: |
           npm ci
-          npm run tauri build
+          npm run tauri build -- --config '{"package":{"productName":"SeatPlanning"}}'
+
+      # 体积来源取证：deb 只有应用本体，AppImage = AppDir + linuxdeploy 捆绑的系统库
+      - name: 产物体积明细
+        run: |
+          ls -lh src-tauri/target/release/bundle/deb/ src-tauri/target/release/bundle/appimage/
+          dir=$(ls -d src-tauri/target/release/bundle/appimage/*.AppDir)
+          du -sh "$dir"
+          du -sh "$dir"/usr/bin "$dir"/usr/lib 2>/dev/null || true
+          du -sh "$dir"/usr/lib/* 2>/dev/null | sort -h | tail -15
 
       - name: 上传 Linux ARM64 产物
         uses: actions/upload-artifact@v4
@@ -272,6 +285,31 @@ jobs:
       - name: 获取版本号
         run: echo "APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").package.version')" >> $GITHUB_ENV
 
+      # 统一改名为「产品_版本_平台-架构.扩展名」，逐个文件作为独立 Release 附件
+      - name: 规整附件名
+        run: |
+          set -e
+          shopt -s nullglob
+          mkdir -p release
+          rename_one() {
+            local src=($1)
+            if [ ${#src[@]} -ne 1 ]; then
+              echo "::error::期望恰好 1 个文件，实际 ${#src[@]} 个：$1"
+              exit 1
+            fi
+            cp "${src[0]}" "release/$2"
+          }
+          rename_one "linux-x64-build/deb/*.deb"                   "座位编排_${APP_VERSION}_linux-x64.deb"
+          rename_one "linux-x64-build/appimage/*.AppImage"          "座位编排_${APP_VERSION}_linux-x64.AppImage"
+          rename_one "linux-arm64-build/deb/*.deb"                  "座位编排_${APP_VERSION}_linux-arm64.deb"
+          rename_one "linux-arm64-build/appimage/*.AppImage"        "座位编排_${APP_VERSION}_linux-arm64.AppImage"
+          rename_one "windows-x64-build/msi/*.msi"                  "座位编排_${APP_VERSION}_windows-x64.msi"
+          rename_one "windows-x64-build/nsis/*.exe"                 "座位编排_${APP_VERSION}_windows-x64-setup.exe"
+          rename_one "windows-x64-win7-build/msi/*-win7.msi"        "座位编排_${APP_VERSION}_windows-x64-win7.msi"
+          rename_one "windows-x64-win7-build/nsis/*-win7-setup.exe" "座位编排_${APP_VERSION}_windows-x64-win7-setup.exe"
+          rename_one "macos-universal-build/*.dmg"                  "座位编排_${APP_VERSION}_macos-universal.dmg"
+          ls -lh release/
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -281,25 +319,16 @@ jobs:
             ## 🪑 座位编排 v${{ env.APP_VERSION }}
             本地离线的会议座位编排工具 | Tauri v1 构建
 
-            ### 🖥️ 发布包
-            - `windows-x64`：Windows 10 / 11 安装包（`.exe` / `.msi`）
-            - `windows-x64-win7`：Windows 7 / 8.x 兼容安装包（需已安装 WebView2 109 与 VC++ 运行库）
-            - macOS 通用：`.dmg`（Apple Silicon + Intel，未签名）
-            - Linux x64：`.deb` / `.AppImage`
-            - Linux ARM64：`.deb` / `.AppImage`
+            ### 🖥️ 发布包（逐个文件，按需下载）
+            - `座位编排_${{ env.APP_VERSION }}_windows-x64-setup.exe` / `_windows-x64.msi`：Windows 10 / 11
+            - `座位编排_${{ env.APP_VERSION }}_windows-x64-win7-setup.exe` / `_windows-x64-win7.msi`：Windows 7 / 8.x（需已安装 WebView2 109 与 VC++ 运行库）
+            - `座位编排_${{ env.APP_VERSION }}_macos-universal.dmg`：macOS 通用包（Intel + Apple Silicon，未签名）
+            - `座位编排_${{ env.APP_VERSION }}_linux-x64.deb` / `_linux-x64.AppImage`
+            - `座位编排_${{ env.APP_VERSION }}_linux-arm64.deb` / `_linux-arm64.AppImage`
 
             ### 📝 更新说明
           generate_release_notes: true
-          files: |
-            windows-x64-build/msi/*.msi
-            windows-x64-build/nsis/*.exe
-            windows-x64-win7-build/msi/*-win7.msi
-            windows-x64-win7-build/nsis/*-win7-setup.exe
-            macos-universal-build/*.dmg
-            linux-x64-build/deb/*.deb
-            linux-x64-build/appimage/*.AppImage
-            linux-arm64-build/deb/*.deb
-            linux-arm64-build/appimage/*.AppImage
-          fail_on_unmatched_files: false
+          files: release/*
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

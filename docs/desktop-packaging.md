@@ -187,14 +187,15 @@ npx tauri icon src-tauri/app-icon.png -o src-tauri/icons
 | job | 工具链 | 说明 |
 |---|---|---|
 | `build-windows-x64` | stable（`RUSTUP_TOOLCHAIN: stable` 覆盖 rust-toolchain.toml） | Win10/11 包 |
-| `build-windows-x64-win7` | **1.77.2** | Win7/8.x 兼容包，产物重命名为 `*-win7-setup.exe` / `*-win7.msi` |
+| `build-windows-x64-win7` | **1.77.2** | Win7/8.x 兼容包，产物名带 `-win7` 后缀 |
 | `build-macos-universal` | stable | 未签名、不公证 |
 | `build-linux-x64` | stable | `.deb` / `.AppImage`，用 `--config` 把 productName 覆盖为 ASCII（deb 包名限制） |
 | `build-linux-arm64` | 1.77.2（容器内） | arm64 runner + focal 容器，`.deb` / `.AppImage` |
-| `release` | — | tag 触发，汇总五个 job 的产物，逐个文件挂载 Release |
 
 - 两个 Windows job 使用同一份源码与同一份 `Cargo.lock`，只有 Rust 工具链不同。
-- 全程无签名步骤；`release` 里 `fail_on_unmatched_files: true`，缺任一产物会直接失败（逐个文件挂载 Release，不允许静默漏包）。
+- 全程无签名步骤；没有 Release job，构建完只把产物挂成 artifact。
+- 每个安装包单独一个 artifact，名称就是最终文件名（`座位编排_<版本>_<平台>-<架构>.<扩展名>`）。
+  `actions/upload-artifact@v4` 没有 `archive` 输入，`compression-level: 0` 只是「不压缩存储」，下载到的仍是 zip，里面只含那一个文件。
 - 缓存 key 按工具链区分（`windows-x64-modern` / `windows-x64-win7`），避免两种工具链共用 target 缓存。
 
 ## 7. Win7 部署检查单

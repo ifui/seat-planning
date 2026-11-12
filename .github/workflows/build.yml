@@ -37,13 +37,33 @@ jobs:
           npm ci
           npm run tauri build
 
-      - name: 上传 Windows 产物
+      - name: 读取版本号
+        shell: pwsh
+        run: |
+          $v = node -p "require('./src-tauri/tauri.conf.json').package.version"
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
+
+      # 每个安装包单独一个 artifact，名称即最终文件名
+      - name: 规整产物名
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist-artifacts -Force | Out-Null
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi "dist-artifacts/SeatPlanning_$($env:APP_VERSION)_windows-x64.msi"
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe "dist-artifacts/SeatPlanning_$($env:APP_VERSION)_windows-x64-setup.exe"
+          Get-ChildItem dist-artifacts | Select-Object Name, Length
+
+      - name: 上传 Windows x64 MSI
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64-build
-          path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+          name: SeatPlanning_${{ env.APP_VERSION }}_windows-x64.msi
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_windows-x64.msi
+          compression-level: 0
+
+      - name: 上传 Windows x64 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeatPlanning_${{ env.APP_VERSION }}_windows-x64-setup.exe
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_windows-x64-setup.exe
           compression-level: 0
 
   # Windows 7 / 8.x 兼容包（rustc 1.77.2 是最后支持 Win7 的工具链）
@@ -74,26 +94,32 @@ jobs:
           npm ci
           npm run tauri build
 
-      - name: 重命名产物（避免与 Win10/11 包同名）
+      - name: 读取版本号
         shell: pwsh
         run: |
-          $nsis = 'src-tauri/target/release/bundle/nsis'
-          Get-ChildItem $nsis -Filter *-setup.exe | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $nsis ($_.Name -replace '-setup\.exe$', '-win7-setup.exe'))
-          }
-          $msi = 'src-tauri/target/release/bundle/msi'
-          # MSI 文件名带语言后缀
-          Get-ChildItem $msi -Filter *.msi | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $msi ($_.Name -replace '_[a-z]{2}-[A-Z]{2}\.msi$', '-win7.msi'))
-          }
+          $v = node -p "require('./src-tauri/tauri.conf.json').package.version"
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-      - name: 上传 Win7 兼容产物
+      - name: 规整产物名
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist-artifacts -Force | Out-Null
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi "dist-artifacts/SeatPlanning_$($env:APP_VERSION)_windows-x64-win7.msi"
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe "dist-artifacts/SeatPlanning_$($env:APP_VERSION)_windows-x64-win7-setup.exe"
+          Get-ChildItem dist-artifacts | Select-Object Name, Length
+
+      - name: 上传 Win7 MSI
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64-win7-build
-          path: |
-            src-tauri/target/release/bundle/msi/*-win7.msi
-            src-tauri/target/release/bundle/nsis/*-win7-setup.exe
+          name: SeatPlanning_${{ env.APP_VERSION }}_windows-x64-win7.msi
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_windows-x64-win7.msi
+          compression-level: 0
+
+      - name: 上传 Win7 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeatPlanning_${{ env.APP_VERSION }}_windows-x64-win7-setup.exe
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_windows-x64-win7-setup.exe
           compression-level: 0
 
   # macOS 通用包（Apple Silicon + Intel）；不签名、不公证
@@ -126,12 +152,20 @@ jobs:
           npm ci
           npm run tauri build -- --target universal-apple-darwin
 
-      - name: 上传 macOS 产物
+      - name: 读取版本号
+        run: echo "APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").package.version')" >> $GITHUB_ENV
+
+      - name: 规整产物名
+        run: |
+          mkdir -p dist-artifacts
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "dist-artifacts/SeatPlanning_${APP_VERSION}_macos-universal.dmg"
+          ls -lh dist-artifacts
+
+      - name: 上传 macOS 安装包
         uses: actions/upload-artifact@v4
         with:
-          name: macos-universal-build
-          path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          name: SeatPlanning_${{ env.APP_VERSION }}_macos-universal.dmg
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_macos-universal.dmg
           compression-level: 0
 
   # Linux x64
@@ -178,13 +212,28 @@ jobs:
           npm ci
           npm run tauri build -- --config '{"package":{"productName":"SeatPlanning"}}'
 
-      - name: 上传 Linux 产物
+      - name: 读取版本号
+        run: echo "APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").package.version')" >> $GITHUB_ENV
+
+      - name: 规整产物名
+        run: |
+          mkdir -p dist-artifacts
+          cp src-tauri/target/release/bundle/deb/*.deb "dist-artifacts/SeatPlanning_${APP_VERSION}_linux-x64.deb"
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "dist-artifacts/SeatPlanning_${APP_VERSION}_linux-x64.AppImage"
+          ls -lh dist-artifacts
+
+      - name: 上传 Linux x64 deb
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x64-build
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          name: SeatPlanning_${{ env.APP_VERSION }}_linux-x64.deb
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_linux-x64.deb
+          compression-level: 0
+
+      - name: 上传 Linux x64 AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeatPlanning_${{ env.APP_VERSION }}_linux-x64.AppImage
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_linux-x64.AppImage
           compression-level: 0
 
   # Linux ARM64（原生 arm64 runner；容器锁在旧发行版上，产物 glibc 要求更低）
@@ -250,85 +299,26 @@ jobs:
           du -sh "$dir"/usr/bin "$dir"/usr/lib 2>/dev/null || true
           du -sh "$dir"/usr/lib/* 2>/dev/null | sort -h | tail -15
 
-      - name: 上传 Linux ARM64 产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-arm64-build
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-          compression-level: 0
-
-  # 发布 Release
-  release:
-    runs-on: ubuntu-latest
-    needs:
-      [
-        build-windows-x64,
-        build-windows-x64-win7,
-        build-macos-universal,
-        build-linux-x64,
-        build-linux-arm64,
-      ]
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 下载所有构建产物
-        uses: actions/download-artifact@v4
-        with:
-          path: ./
-
-      - name: 查看文件结构
-        run: ls -R
-
-      - name: 获取版本号
+      - name: 读取版本号
         run: echo "APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").package.version')" >> $GITHUB_ENV
 
-      # 统一改名为「产品_版本_平台-架构.扩展名」，逐个文件作为独立 Release 附件
-      - name: 规整附件名
+      - name: 规整产物名
         run: |
-          set -e
-          shopt -s nullglob
-          mkdir -p release
-          rename_one() {
-            local src=($1)
-            if [ ${#src[@]} -ne 1 ]; then
-              echo "::error::期望恰好 1 个文件，实际 ${#src[@]} 个：$1"
-              exit 1
-            fi
-            cp "${src[0]}" "release/$2"
-          }
-          rename_one "linux-x64-build/deb/*.deb"                   "座位编排_${APP_VERSION}_linux-x64.deb"
-          rename_one "linux-x64-build/appimage/*.AppImage"          "座位编排_${APP_VERSION}_linux-x64.AppImage"
-          rename_one "linux-arm64-build/deb/*.deb"                  "座位编排_${APP_VERSION}_linux-arm64.deb"
-          rename_one "linux-arm64-build/appimage/*.AppImage"        "座位编排_${APP_VERSION}_linux-arm64.AppImage"
-          rename_one "windows-x64-build/msi/*.msi"                  "座位编排_${APP_VERSION}_windows-x64.msi"
-          rename_one "windows-x64-build/nsis/*.exe"                 "座位编排_${APP_VERSION}_windows-x64-setup.exe"
-          rename_one "windows-x64-win7-build/msi/*-win7.msi"        "座位编排_${APP_VERSION}_windows-x64-win7.msi"
-          rename_one "windows-x64-win7-build/nsis/*-win7-setup.exe" "座位编排_${APP_VERSION}_windows-x64-win7-setup.exe"
-          rename_one "macos-universal-build/*.dmg"                  "座位编排_${APP_VERSION}_macos-universal.dmg"
-          ls -lh release/
+          mkdir -p dist-artifacts
+          cp src-tauri/target/release/bundle/deb/*.deb "dist-artifacts/SeatPlanning_${APP_VERSION}_linux-arm64.deb"
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "dist-artifacts/SeatPlanning_${APP_VERSION}_linux-arm64.AppImage"
+          ls -lh dist-artifacts
 
-      - name: 发布到 GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: 上传 Linux ARM64 deb
+        uses: actions/upload-artifact@v4
         with:
-          name: "v${{ env.APP_VERSION }}"
-          tag_name: ${{ github.ref_name }}
-          body: |
-            ## 🪑 座位编排 v${{ env.APP_VERSION }}
-            本地离线的会议座位编排工具 | Tauri v1 构建
+          name: SeatPlanning_${{ env.APP_VERSION }}_linux-arm64.deb
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_linux-arm64.deb
+          compression-level: 0
 
-            ### 🖥️ 发布包（逐个文件，按需下载）
-            - `座位编排_${{ env.APP_VERSION }}_windows-x64-setup.exe` / `_windows-x64.msi`：Windows 10 / 11
-            - `座位编排_${{ env.APP_VERSION }}_windows-x64-win7-setup.exe` / `_windows-x64-win7.msi`：Windows 7 / 8.x（需已安装 WebView2 109 与 VC++ 运行库）
-            - `座位编排_${{ env.APP_VERSION }}_macos-universal.dmg`：macOS 通用包（Intel + Apple Silicon，未签名）
-            - `座位编排_${{ env.APP_VERSION }}_linux-x64.deb` / `_linux-x64.AppImage`
-            - `座位编排_${{ env.APP_VERSION }}_linux-arm64.deb` / `_linux-arm64.AppImage`
-
-            ### 📝 更新说明
-          generate_release_notes: true
-          files: release/*
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 上传 Linux ARM64 AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeatPlanning_${{ env.APP_VERSION }}_linux-arm64.AppImage
+          path: dist-artifacts/SeatPlanning_${{ env.APP_VERSION }}_linux-arm64.AppImage
+          compression-level: 0

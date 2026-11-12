@@ -43,7 +43,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="umodal">
-      <div v-if="modelValue" class="umodal-mask" @click.self="close">
+      <div v-if="modelValue" class="umodal-mask">
         <div class="umodal" :style="{ width }" role="dialog" aria-modal="true">
           <header class="umodal-head">
             <div class="umodal-head-main">

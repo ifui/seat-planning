@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { RosterPlan, UnitNode } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
-import { UiSelect, UiModal, UiIconButton } from '../ui'
+import { UiButton, UiIconButton, UiInput, UiModal, UiSelect } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -398,11 +398,11 @@ function askDelete(u: UnitNode): void {
     <div class="field-row">
       <div class="field">
         <label>单位名称</label>
-        <input v-model="form.name" class="input" placeholder="如：办公室" @keyup.enter="submitUnit" />
+        <UiInput v-model="form.name" placeholder="如：办公室" @keyup.enter="submitUnit" />
       </div>
       <div class="field">
         <label>单位编号（可选）</label>
-        <input v-model="form.code" class="input" placeholder="如：A01" @keyup.enter="submitUnit" />
+        <UiInput v-model="form.code" placeholder="如：A01" @keyup.enter="submitUnit" />
       </div>
     </div>
     <div class="field">
@@ -417,15 +417,15 @@ function askDelete(u: UnitNode): void {
       <span v-if="parentLocked !== null && !editingId" class="caption">上级已锁定，可用「编辑」调整。</span>
     </div>
     <template #footer>
-      <button class="btn" @click="unitOpen = false">取消</button>
-      <button class="btn primary" @click="submitUnit">{{ editingId ? '保存修改' : '添加单位' }}</button>
+      <UiButton variant="ghost" @click="unitOpen = false">取消</UiButton>
+      <UiButton variant="primary" @click="submitUnit">{{ editingId ? '保存修改' : '添加单位' }}</UiButton>
     </template>
   </UiModal>
 
   <UiModal v-model="confirmState.open" :title="confirmState.title" :description="confirmState.desc" width="400px">
     <template #footer>
-      <button class="btn" @click="confirmState.open = false">取消</button>
-      <button class="btn danger" @click="runConfirm">确认删除</button>
+      <UiButton variant="ghost" @click="confirmState.open = false">取消</UiButton>
+      <UiButton variant="danger" @click="runConfirm">确认删除</UiButton>
     </template>
   </UiModal>
 

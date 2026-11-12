@@ -44,20 +44,21 @@ import {
   nowISO,
   pruneSeatOverlay,
   seatsOfSheet,
-  sheetSize,
   uid,
   type SeatRef,
 } from "../engine/sheet";
-import { renderSeatChart } from "../engine/render";
+import { chartFrame, renderSeatChart } from "../engine/render";
 import { preferences } from "../preferences";
-import { printHtml, saveFile } from "../platform/files";
+import { printImage, saveFile } from "../platform/files";
 import SeatBoardPane from "../components/project/SeatBoardPane.vue";
 import RulesPanel from "../components/RulesPanel.vue";
 import ImportDialog from "../components/roster/ImportDialog.vue";
 import {
   COLOR_PRESETS,
+  UiButton,
   UiChart,
   UiColorPicker,
+  UiInput,
   UiSelect,
   UiModal,
   UiNumberInput,
@@ -479,6 +480,16 @@ const assignedCount = computed(() => {
   ).length;
 });
 const leaveCount = computed(() => leaveMembers.value.length);
+/** 「在座」口径：有座位、人未请假、座位也未标记请假且未停用；与座位占用率(assignedCount)分开算 */
+const seatedCount = computed(() => {
+  if (!draft.value) return 0;
+  return draft.value.assignments.filter(
+    (a) =>
+      a.status !== "leave" &&
+      memberById.value.get(a.memberId)?.status !== "leave" &&
+      !seatIndex.value.get(a.seatId)?.disabled,
+  ).length;
+});
 /** 座位序号开关：缺省显示，兼容旧项目 */
 const showSeatNumbers = computed(() => draft.value?.showSeatNumbers !== false);
 /** 座位下方信息开关：职级缺省显示，职务/单位缺省关闭 */
@@ -2147,17 +2158,19 @@ async function submitAdd(): Promise<void> {
 
 // ---- 导入名册：复用名册页的批量导入（文件解析 / 字段映射 / 预览修正） ----
 const importOpen = ref(false);
+/** 导入结果：跳过的重名名单（默认拒绝），避免静默丢弃 */
+const importResult = ref<{ imported: number; skipped: { name: string; unit: string }[] } | null>(null);
 
 function handleProjectImport(payload: {
   rows: {
     name: string;
-    gender: "" | "M" | "F";
     unit: string;
     rank: string;
     duty: string;
     note: string;
   }[];
   targetUnitId: string;
+  allowDuplicate: boolean;
 }): void {
   const snap = draft.value?.rosterSnapshot;
   if (!draft.value || !snap || !payload.rows.length) return;
@@ -2166,6 +2179,9 @@ function handleProjectImport(payload: {
   const fallbackRank = [...snap.ranks].sort((a, b) => b.order - a.order)[0];
   const wasEmpty = !draft.value.participantIds.length;
   const createdIds: string[] = [];
+  const skipped: { name: string; unit: string }[] = [];
+  const dupKey = (name: string, unitId: string) => `${name.trim()}\u0000${unitId}`;
+  const seen = new Set(snap.members.map((m) => dupKey(m.name, m.unitId)));
   let newRanks = 0;
   for (const row of payload.rows) {
     const unitName = row.unit.trim();
@@ -2173,6 +2189,13 @@ function handleProjectImport(payload: {
       (unitName ? snap.units.find((u) => u.name === unitName)?.id : "") ||
       payload.targetUnitId ||
       rootId;
+    if (!payload.allowDuplicate && seen.has(dupKey(row.name, unitId))) {
+      skipped.push({
+        name: row.name,
+        unit: snap.units.find((u) => u.id === unitId)?.name ?? "未分单位",
+      });
+      continue;
+    }
     let rankId = fallbackRank?.id ?? "";
     const rankName = row.rank.trim();
     if (rankName) {
@@ -2198,20 +2221,21 @@ function handleProjectImport(payload: {
       rankId,
       duty: row.duty.trim() || undefined,
       aliases: [],
-      gender: row.gender || undefined,
       note: row.note || undefined,
       status: "present",
       order: snap.members.length,
     };
     snap.members.push(member);
+    seen.add(dupKey(member.name, member.unitId));
     createdIds.push(member.id);
   }
   draft.value.participantIds = wasEmpty
     ? snap.members.map((m) => m.id)
     : [...new Set([...draft.value.participantIds, ...createdIds])];
   importOpen.value = false;
+  importResult.value = { imported: createdIds.length, skipped };
   flash(
-    `已导入 ${payload.rows.length} 人${newRanks ? `，新建职级 ${newRanks} 个` : ""}`,
+    `已导入 ${createdIds.length} 人${skipped.length ? `，跳过重名 ${skipped.length} 人` : ""}${newRanks ? `，新建职级 ${newRanks} 个` : ""}`,
   );
 }
 
@@ -2522,18 +2546,25 @@ function chartCanvas(scale: number): {
   scale: number;
 } {
   const layoutNow = layout.value!;
-  const size = sheetSize(layoutNow.sheet);
-  const fit = Math.min(12000 / (size.w + 128), 12000 / (size.h + 164), 4);
+  const frame = chartFrame(layoutNow.sheet);
+  const fit = Math.min(12000 / frame.width, 12000 / frame.height, 4);
   const used = Math.max(0.5, Math.min(scale, fit));
-  const subtitleParts = [`共 ${assignedCount.value} 人就座`];
-  if (disabledSeats.value)
-    subtitleParts.push(`${disabledSeats.value} 个不坐人`);
+  // 副信息：名册名 → 在座人数 → 名册人数 → 导出时刻（分钟精度）；口径直接写在标签上
+  const now = new Date();
+  const pad2 = (n: number): string => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const subtitle = `${roster.value!.name} · 在座 ${seatedCount.value} 人 · 名册 ${participants.value.length} 人 · ${stamp}`;
   const canvas = renderSeatChart({
     layout: layoutNow,
     roster: displayRoster.value!,
     assignments: draft.value!.assignments,
     title: draft.value!.name,
-    subtitle: `${roster.value!.name} · ${subtitleParts.join(" · ")}`,
+    subtitle,
+    legend: {
+      disabledSeats: disabledSeats.value,
+      leaveMembers: leaveCount.value,
+      fixedSeats: Object.keys(fixedSeats.value).length > 0,
+    },
     showSeatNumbers: showSeatNumbers.value,
     showRank: showRank.value,
     showDuty: showDuty.value,
@@ -2701,12 +2732,13 @@ async function printChart(): Promise<void> {
   if (!draft.value || !layout.value || !roster.value) return;
   const { canvas } = chartCanvas(2);
   const url = canvas.toDataURL("image/png");
-  const html =
-    `<!doctype html><html><head><meta charset="utf-8"><title>${draft.value.name}</title>` +
-    `<style>@page{size:A4 ${paper.value};margin:8mm}html,body{margin:0;padding:0}img{width:100%;height:auto}</style>` +
-    `</head><body><img src="${url}" onload="window.focus()"></body></html>`;
-  const mode = await printHtml(draft.value.name, html);
-  if (mode === "system") flash("已在系统浏览器中打开打印页，请使用浏览器打印");
+  const mode = await printImage(
+    draft.value.name,
+    url,
+    paper.value,
+    canvas.width / canvas.height,
+  );
+  if (mode === "desktop") flash("已打开系统打印对话框，可选打印机与纸张");
 }
 
 // ---- 快照恢复 ----
@@ -3642,11 +3674,11 @@ async function restoreSnap(id: string): Promise<void> {
   >
     <div class="field">
       <label>项目名称</label>
-      <input v-model="renameValue" class="input" @keyup.enter="confirmRename" />
+      <UiInput v-model="renameValue" @keyup.enter="confirmRename" />
     </div>
     <template #footer>
-      <button class="btn" @click="renameOpen = false">取消</button>
-      <button class="btn primary" @click="confirmRename">保存名称</button>
+      <UiButton variant="ghost" @click="renameOpen = false">取消</UiButton>
+      <UiButton variant="primary" @click="confirmRename">保存名称</UiButton>
     </template>
   </UiModal>
 
@@ -3657,20 +3689,15 @@ async function restoreSnap(id: string): Promise<void> {
   >
     <div class="field">
       <label>区域名称</label>
-      <input
-        v-model="zoneForm.name"
-        class="input"
-        maxlength="20"
-        @keyup.enter="saveZone"
-      />
+      <UiInput v-model="zoneForm.name" @keyup.enter="saveZone" />
     </div>
     <div class="field">
       <label>标识颜色</label>
       <UiColorPicker v-model="zoneForm.color" custom-label="自定义区域颜色" />
     </div>
     <template #footer>
-      <button class="btn" @click="zoneEditOpen = false">取消</button>
-      <button class="btn primary" @click="saveZone">保存区域</button>
+      <UiButton variant="ghost" @click="zoneEditOpen = false">取消</UiButton>
+      <UiButton variant="primary" @click="saveZone">保存区域</UiButton>
     </template>
   </UiModal>
 
@@ -3827,21 +3854,20 @@ async function restoreSnap(id: string): Promise<void> {
     </div>
     <div class="field">
       <label>职务（可留空，仅展示与筛选）</label>
-      <input
+      <UiInput
         v-model="addDuty"
-        class="input"
         placeholder="如：主任、处长、副主任"
       />
     </div>
     <template #footer>
-      <button class="btn" @click="addOpen = false">取消</button>
-      <button
-        class="btn primary"
+      <UiButton variant="ghost" @click="addOpen = false">取消</UiButton>
+      <UiButton
+        variant="primary"
         :disabled="!addText.trim()"
         @click="submitAdd"
       >
         添加
-      </button>
+      </UiButton>
     </template>
   </UiModal>
 
@@ -3854,6 +3880,33 @@ async function restoreSnap(id: string): Promise<void> {
     :default-unit-id="snapRootUnitId"
     @import="handleProjectImport"
   />
+
+  <!-- 导入结果：跳过的重名必须可见 -->
+  <UiModal
+    :model-value="!!importResult"
+    title="导入结果"
+    width="460px"
+    @update:model-value="(v: boolean) => { if (!v) importResult = null }"
+  >
+    <div v-if="importResult" class="import-result">
+      <div class="import-result-line">
+        成功导入 <b>{{ importResult.imported }}</b> 人
+        <span v-if="importResult.skipped.length">，跳过 <b class="warn">{{ importResult.skipped.length }}</b> 人</span>
+      </div>
+      <div v-if="importResult.skipped.length" class="import-skip">
+        <div class="import-skip-title">已跳过：重名 <span>（姓名一致 + 同单位）</span></div>
+        <ul>
+          <li v-for="(s, i) in importResult.skipped" :key="i">
+            <span class="import-skip-name">{{ s.name }}</span>
+            <span class="import-skip-unit">{{ s.unit }}</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <template #footer>
+      <UiButton variant="primary" @click="importResult = null">知道了</UiButton>
+    </template>
+  </UiModal>
 
   <!-- 座位详情：锚定在座位上方/下方的浮层卡片 -->
   <Teleport to="body">

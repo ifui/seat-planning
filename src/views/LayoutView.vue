@@ -55,6 +55,7 @@ import UiMenuItem from '../ui/components/UiMenuItem.vue'
 import UiButton from '../ui/components/UiButton.vue'
 import UiDropdown from '../ui/components/UiDropdown.vue'
 import UiIconButton from '../ui/components/UiIconButton.vue'
+import UiInput from '../ui/components/UiInput.vue'
 import UiModal from '../ui/components/UiModal.vue'
 import UiNumberInput from '../ui/components/UiNumberInput.vue'
 
@@ -1231,7 +1232,7 @@ function onCommand(cmd: string): void {
     >
       <label class="lv-field">
         <span>布局名称</span>
-        <input v-model="renameName" class="lv-input" maxlength="40" placeholder="例如：第一会议室布局" @keyup.enter="confirmRename" />
+        <UiInput v-model="renameName" placeholder="例如：第一会议室布局" @keyup.enter="confirmRename" />
       </label>
       <template #footer>
         <UiButton variant="ghost" size="sm" @click="renameOpen = false">取消</UiButton>

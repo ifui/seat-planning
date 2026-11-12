@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import UiButton from '../../ui/components/UiButton.vue'
+import UiCheckbox from '../../ui/components/UiCheckbox.vue'
+import UiInput from '../../ui/components/UiInput.vue'
 import UiModal from '../../ui/components/UiModal.vue'
+import UiSegmented from '../../ui/components/UiSegmented.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -51,18 +54,21 @@ function submit(): void {
       <div class="fd-row">
         <span class="fd-label">填充类型</span>
         <div class="fd-seg">
-          <button :class="{ on: kind === 'seat' }" @click="kind = 'seat'">普通座位</button>
-          <button :class="{ on: kind === 'podium' }" @click="kind = 'podium'">主席台</button>
+          <UiSegmented
+            :model-value="kind"
+            :options="[
+              { value: 'seat', label: '普通座位' },
+              { value: 'podium', label: '主席台' }
+            ]"
+            @update:model-value="(v: string | number) => (kind = v as 'seat' | 'podium')"
+          />
         </div>
       </div>
-      <label class="fd-check">
-        <input v-model="tablePerRow" type="checkbox" />
-        <span>整行视作同一张条桌（桌带连续绘制）</span>
-      </label>
-      <label class="fd-field">
+      <UiCheckbox v-model="tablePerRow" label="整行视作同一张条桌（桌带连续绘制）" />
+      <div class="fd-field">
         <span>桌名（可选）</span>
-        <input v-model="tableLabel" placeholder="如：1 排" />
-      </label>
+        <UiInput v-model="tableLabel" placeholder="如：1 排" />
+      </div>
     </div>
     <template #footer>
       <UiButton variant="ghost" size="sm" @click="emit('update:modelValue', false)">取消</UiButton>
@@ -75,20 +81,7 @@ function submit(): void {
 .fd { display: flex; flex-direction: column; gap: 12px; }
 .fd-row { display: flex; align-items: center; gap: 12px; }
 .fd-label { width: 72px; font-size: 12px; color: var(--text-muted); flex: none; }
-.fd-seg { display: flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
-.fd-seg button {
-  border: none; background: var(--bg); padding: 5px 14px; font-size: 12px; font-family: inherit;
-  color: var(--text-secondary); cursor: pointer;
-}
-.fd-seg button + button { border-left: 1px solid var(--border); }
-.fd-seg button.on { background: var(--primary-soft); color: var(--primary); font-weight: 500; }
-.fd-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
-.fd-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
-.fd-field input {
-  height: 30px; padding: 0 8px; font-size: 12px; font-family: inherit;
-  border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
-  color: var(--text-primary); outline: none;
-}
-.fd-field input:focus { border-color: var(--primary); }
+.fd-seg { flex: 1; min-width: 0; }
+.fd-field { display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-xs); color: var(--text-secondary); }
 .fd-hint { margin: -2px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-disabled); }
 </style>

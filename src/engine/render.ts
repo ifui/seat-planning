@@ -1,5 +1,5 @@
-import type { Assignment, LayoutPackage, Member, RosterPlan, SheetCell } from '../types'
-import { cellRect, cellAt, collectBorderLines, isCovered, mergeAt, seatsInRow, sheetSize } from './sheet'
+import type { Assignment, LayoutPackage, Member, RosterPlan, Sheet, SheetCell } from '../types'
+import { cellRect, cellAt, collectBorderLines, colWidthAt, isCovered, mergeAt, rowHeightAt, seatsInRow, sheetSize } from './sheet'
 import { ELEMENT_SHAPES, elementMeta, elementTextAlign, elementTextColor, elementTextOffset, elementTextPadding, elementTextVAlign, resolveGeometry } from './elements'
 
 export interface ChartOptions {
@@ -22,6 +22,52 @@ export interface ChartOptions {
   seatNumbers?: Map<string, number>
   /** 固定座位：seatId → memberId；导出时在座位右上角画锁标识 */
   fixedSeats?: Record<string, string>
+  /** 图例附加信息：不坐人座位数、请假人数、是否存在固定座位 */
+  legend?: { disabledSeats?: number; leaveMembers?: number; fixedSeats?: boolean }
+}
+
+/** 导出图版式常量：PNG 与打印共用这一份绘制代码，改这里两条链路同时生效 */
+const PAD = 48
+/** 坐标走廊：只留左侧排号与底部列号，顶部与右侧不再预留 */
+const GUTTER = 30
+/** 图例区高度：32 让「图例下沿 → 纸边」与「纸边 → 标题字形」两处留白接近（58 vs 58） */
+const LEGEND_H = 32
+const TITLE_SIZE = 22
+const SUB_SIZE = 11
+const TITLE_Y = 70
+const SUBTITLE_Y = 98
+/** 副信息下沿 → 表格上沿：去掉分隔线后，标题区与表格全靠这段留白分层 */
+const HEAD_GAP = 36
+/** 标题区高度（自 PAD 起算）：98 - 48 + 11/2 + 36 ≈ 91.5，取整避免半像素平移 */
+const HEAD_H = 92
+const COORD_SIZE = 10
+/** 坐标与表格的间距：横向与纵向共用同一视觉间距 */
+const COORD_GAP = 10
+// 导出图配色直接取自设计系统（tokens.css），不另起一套
+const INK = '#1f2328' // --text-primary
+const MUTED = '#4d5866' // --text-secondary
+const FAINT = '#8b93a0' // --text-muted
+const SWATCH_LINE = '#cdd2d9' // --border-strong
+const FONT = '"PingFang SC", "Microsoft YaHei", sans-serif'
+
+/**
+ * 画布尺寸：调用方用它算输出倍率的降倍上限，避免与版式常量各写一份。
+ * 宽度只加一条左侧走廊、高度只加一条底部走廊，四边页边距仍是同一个 PAD。
+ */
+export function chartFrame(sheet: Sheet): { width: number; height: number } {
+  const size = sheetSize(sheet)
+  return {
+    width: PAD * 2 + GUTTER + size.w,
+    height: PAD * 2 + HEAD_H + size.h + GUTTER + LEGEND_H
+  }
+}
+
+/** 坐标标注的最小视觉间距：格宽/排高不够时按步长抽稀，两个方向共用同一算法 */
+function labelStep(count: number, sizeAt: (i: number) => number, minGap: number): number {
+  let min = Infinity
+  for (let i = 0; i < count; i++) min = Math.min(min, sizeAt(i))
+  if (!Number.isFinite(min) || min <= 0) return 1
+  return Math.max(1, Math.ceil(minGap / min))
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -39,14 +85,70 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath()
 }
 
-function fitFont(ctx: CanvasRenderingContext2D, text: string, maxW: number, base: number, min = 8): number {
+function fitFont(ctx: CanvasRenderingContext2D, text: string, maxW: number, base: number, min = 8, weight = 400): number {
   let size = base
-  ctx.font = `400 ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
+  ctx.font = `${weight} ${size}px ${FONT}`
   while (size > min && ctx.measureText(text).width > maxW) {
     size -= 0.5
-    ctx.font = `400 ${size}px "PingFang SC", "Microsoft YaHei", sans-serif`
+    ctx.font = `${weight} ${size}px ${FONT}`
   }
   return size
+}
+
+/** 坐标：左侧排号 + 底部列号，同一套来源（cellRect）与同一抽稀步长 */
+function drawCoords(ctx: CanvasRenderingContext2D, s: Sheet, size: { w: number; h: number }): void {
+  ctx.font = `400 ${COORD_SIZE}px ${FONT}`
+  ctx.fillStyle = FAINT
+  ctx.textBaseline = 'middle'
+  const colStep = labelStep(s.cols, (c) => colWidthAt(s, c), COORD_SIZE * 1.8)
+  const rowStep = labelStep(s.rows, (r) => rowHeightAt(s, r), COORD_SIZE * 1.8)
+  // 列号：底部，取格子的水平中点
+  ctx.textAlign = 'center'
+  for (let c = 0; c < s.cols; c += colStep) {
+    const rect = cellRect(s, 0, c)
+    ctx.fillText(`${c + 1}`, rect.x + rect.w / 2, s.originY + size.h + GUTTER / 2)
+  }
+  // 排号：左侧右对齐，离表格 COORD_GAP
+  ctx.textAlign = 'right'
+  for (let r = 0; r < s.rows; r += rowStep) {
+    const rect = cellRect(s, r, 0)
+    ctx.fillText(`${r + 1}`, s.originX - COORD_GAP, rect.y + rect.h / 2)
+  }
+}
+
+interface LegendItem {
+  kind: 'hatch' | 'fill' | 'lock'
+  label: string
+  fill?: string
+}
+
+/** 图例：斜纹（不坐人）始终出现，其余按数据是否存在决定 */
+function drawLegend(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  items: LegendItem[],
+  hatch: CanvasPattern
+): void {
+  const sw = 12
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  ctx.font = `400 10px ${FONT}`
+  let cursor = x
+  for (const it of items) {
+    if (it.kind === 'lock') {
+      drawSeatLock(ctx, cursor + 2, y - 4, 8)
+    } else {
+      ctx.fillStyle = it.kind === 'fill' ? (it.fill ?? '#FBF5E9') : hatch
+      ctx.fillRect(cursor, y - sw / 2, sw, sw)
+      ctx.strokeStyle = SWATCH_LINE
+      ctx.lineWidth = 1
+      ctx.strokeRect(cursor + 0.5, y - sw / 2 + 0.5, sw - 1, sw - 1)
+    }
+    ctx.fillStyle = MUTED
+    ctx.fillText(it.label, cursor + sw + 7, y)
+    cursor += sw + 7 + ctx.measureText(it.label).width + 18
+  }
 }
 
 /** 固定座位标识：右上角小锁，克制尺寸，不影响姓名/座号/职级 */
@@ -79,10 +181,13 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   const mode = opts.mode ?? 'seated'
   const s = layout.sheet
   const size = sheetSize(s)
-  const pad = 44
-  const headerH = 76
-  const W = size.w + pad * 2 + 40
-  const H = size.h + pad * 2 + headerH
+  const { width: W, height: H } = chartFrame(s)
+  const sheetLeft = PAD + GUTTER
+  const sheetRight = W - PAD
+  const sheetTop = PAD + HEAD_H
+  const sheetBottom = sheetTop + size.h
+  /** 标题/副信息对齐「表格 + 左侧坐标走廊」的视觉中心，避免画幅右移后标题偏左 */
+  const contentCX = (sheetLeft + sheetRight) / 2
 
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(W * scale)
@@ -109,26 +214,27 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
     return ctx.createPattern(c, 'repeat')!
   })()
 
-  ctx.fillStyle = '#26333A'
+  // 标题区：标题居中 → 副信息；不画分隔线，改由 HEAD_GAP 的留白与表格分层
   const title = opts.title || '座位表'
-  const ts = fitFont(ctx, title, W - pad * 2 - 120, 22, 14)
-  ctx.font = `500 ${ts}px "PingFang SC", "Microsoft YaHei", sans-serif`
-  ctx.textAlign = 'left'
+  const textW = sheetRight - sheetLeft
+  const ts = fitFont(ctx, title, textW, TITLE_SIZE, 14, 600)
+  ctx.fillStyle = INK
+  ctx.font = `600 ${ts}px ${FONT}`
+  ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(title, pad, 30)
+  ctx.fillText(title, contentCX, TITLE_Y, textW)
   if (opts.subtitle) {
-    ctx.fillStyle = '#8A979D'
-    ctx.font = '400 11px "PingFang SC", "Microsoft YaHei", sans-serif'
-    ctx.fillText(opts.subtitle, pad, 54)
+    const ss = fitFont(ctx, opts.subtitle, textW, SUB_SIZE, 9)
+    ctx.fillStyle = MUTED
+    ctx.font = `400 ${ss}px ${FONT}`
+    ctx.fillText(opts.subtitle, contentCX, SUBTITLE_Y, textW)
   }
-  ctx.strokeStyle = '#E4E7E6'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(pad, headerH - 12)
-  ctx.lineTo(W - pad, headerH - 12)
-  ctx.stroke()
 
-  ctx.translate(pad, headerH)
+  // 网格坐标系：平移到内容外接框左上角（工作表可能带 originX/originY 偏移）
+  ctx.save()
+  ctx.translate(sheetLeft - s.originX, sheetTop - s.originY)
+  drawCoords(ctx, s, size)
+
   const memberById = new Map<string, Member>(roster.members.map((m) => [m.id, m]))
   const rankById = new Map(roster.ranks.map((r) => [r.id, r]))
   const unitById = new Map(roster.units.map((u) => [u.id, u]))
@@ -137,16 +243,6 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   const showUnit = opts.showUnit === true
   const assignBySeat = new Map<string, Assignment>()
   for (const a of assignments) assignBySeat.set(a.seatId, a)
-
-  // 排号在左侧
-  for (let row = 0; row < s.rows; row++) {
-    const rect = cellRect(s, row, 0)
-    ctx.fillStyle = '#98A5AA'
-    ctx.font = '400 10px "PingFang SC", "Microsoft YaHei", sans-serif'
-    ctx.textAlign = 'right'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(`${row + 1}`, rect.x - 10, rect.y + rect.h / 2)
-  }
 
   // 先画特殊块（合并区/过道/讲台/背景板）
   for (let row = 0; row < s.rows; row++) {
@@ -255,8 +351,8 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
   // 边框：整表统一收集并去重（与画布同一份数据），按导出倍率对齐设备像素
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
-  const ox = Math.round(pad * scale)
-  const oy = Math.round(headerH * scale)
+  const ox = Math.round((sheetLeft - s.originX) * scale)
+  const oy = Math.round((sheetTop - s.originY) * scale)
   for (const line of collectBorderLines(s)) {
     const wpx = Math.max(1, Math.round(line.width * scale))
     const offset = wpx % 2 === 1 ? 0.5 : 0
@@ -336,6 +432,17 @@ export function renderSeatChart(opts: ChartOptions): HTMLCanvasElement {
     }
   }
   ctx.restore()
+  ctx.restore()
+
+  // 图例：斜纹（不坐人）始终出现，其余按真实数据决定是否出现
+  const legendItems: LegendItem[] = [
+    { kind: 'hatch', label: `不坐人${opts.legend?.disabledSeats ? ` ${opts.legend.disabledSeats} 个` : ''}` }
+  ]
+  if (opts.legend?.leaveMembers) {
+    legendItems.push({ kind: 'fill', fill: '#FBF5E9', label: `请假 ${opts.legend.leaveMembers} 人` })
+  }
+  if (opts.legend?.fixedSeats) legendItems.push({ kind: 'lock', label: '固定座位' })
+  drawLegend(ctx, sheetLeft, sheetBottom + GUTTER + LEGEND_H / 2, legendItems, hatch)
 
   return canvas
 }

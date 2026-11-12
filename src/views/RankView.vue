@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { RankDef, RosterPlan } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
-import { UiSelect, UiModal, UiColorPicker, UiIconButton } from '../ui'
+import { UiButton, UiColorPicker, UiIconButton, UiInput, UiModal, UiSelect } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -283,11 +283,11 @@ function askDelete(r: RankDef): void {
     <div class="field-row">
       <div class="field">
         <label>职级名称</label>
-        <input v-model="form.name" class="input" placeholder="如：一级巡视员" @keyup.enter="submitRank" />
+        <UiInput v-model="form.name" placeholder="如：一级巡视员" @keyup.enter="submitRank" />
       </div>
       <div class="field">
         <label>简称（可选）</label>
-        <input v-model="form.shortName" class="input" placeholder="如：一级" @keyup.enter="submitRank" />
+        <UiInput v-model="form.shortName" placeholder="如：一级" @keyup.enter="submitRank" />
       </div>
     </div>
     <div class="field">
@@ -295,15 +295,15 @@ function askDelete(r: RankDef): void {
       <UiColorPicker v-model="form.color" custom-label="自定义职级标识色" />
     </div>
     <template #footer>
-      <button class="btn" @click="rankOpen = false">取消</button>
-      <button class="btn primary" @click="submitRank">{{ editingId ? '保存修改' : '添加职级' }}</button>
+      <UiButton variant="ghost" @click="rankOpen = false">取消</UiButton>
+      <UiButton variant="primary" @click="submitRank">{{ editingId ? '保存修改' : '添加职级' }}</UiButton>
     </template>
   </UiModal>
 
   <UiModal v-model="confirmState.open" :title="confirmState.title" :description="confirmState.desc" width="400px">
     <template #footer>
-      <button class="btn" @click="confirmState.open = false">取消</button>
-      <button class="btn danger" @click="runConfirm">确认删除</button>
+      <UiButton variant="ghost" @click="confirmState.open = false">取消</UiButton>
+      <UiButton variant="danger" @click="runConfirm">确认删除</UiButton>
     </template>
   </UiModal>
 

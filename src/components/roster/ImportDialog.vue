@@ -2,8 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { FieldMap, ParsedPerson, RawTable } from '../../engine/rosterImport'
 import { buildRows, readRosterFile, suggestMapping } from '../../engine/rosterImport'
-import UiModal from '../../ui/components/UiModal.vue'
-import UiIcon from '../../ui/components/UiIcon.vue'
+import { UiButton, UiCheckbox, UiIcon, UiModal, UiSelect } from '../../ui'
 
 interface EditRow extends ParsedPerson {
   ignore: boolean
@@ -25,8 +24,9 @@ const emit = defineEmits<{
   (
     e: 'import',
     payload: {
-      rows: { name: string; gender: '' | 'M' | 'F'; unit: string; rank: string; duty: string; note: string }[]
+      rows: { name: string; unit: string; rank: string; duty: string; note: string }[]
       targetUnitId: string
+      allowDuplicate: boolean
     }
   ): void
 }>()
@@ -37,17 +37,18 @@ const open = computed({
 })
 
 const table = ref<RawTable | null>(null)
-const mapping = ref<FieldMap>({ name: 0, gender: -1, unit: -1, rank: -1, duty: -1, note: -1 })
+const mapping = ref<FieldMap>({ name: 0, unit: -1, rank: -1, duty: -1, note: -1 })
 const rows = ref<EditRow[]>([])
 const fileName = ref('')
 const error = ref('')
 const busy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const targetUnitId = ref('')
+/** 默认拒绝重名：同姓名 + 同单位视为重复录入 */
+const allowDuplicate = ref(false)
 
 const MAP_FIELDS: { key: keyof FieldMap; label: string; required?: boolean }[] = [
   { key: 'name', label: '姓名', required: true },
-  { key: 'gender', label: '性别' },
   { key: 'unit', label: '单位 / 部门' },
   { key: 'rank', label: '职级' },
   { key: 'duty', label: '职务' },
@@ -71,6 +72,7 @@ function reset(): void {
   error.value = ''
   busy.value = false
   if (fileInput.value) fileInput.value.value = ''
+  allowDuplicate.value = false
 }
 
 async function loadFile(file: File | null | undefined): Promise<void> {
@@ -104,6 +106,17 @@ function onDrop(e: DragEvent): void {
 function rebuild(): void {
   if (!table.value) return
   rows.value = buildRows(table.value, mapping.value).map((r) => ({ ...r, ignore: !r.name }))
+}
+
+/** 列选项：-1 = 不导入，其余为原始列下标 */
+const columnOptions = computed(() => [
+  { value: -1, label: '不导入' },
+  ...(table.value?.columns ?? []).map((c, i) => ({ value: i, label: c }))
+])
+
+function setMapping(key: keyof FieldMap, v: string | number | null): void {
+  mapping.value[key] = typeof v === 'number' ? v : Number(v ?? -1)
+  rebuild()
 }
 
 const pending = computed(() => rows.value.filter((r) => !r.ignore && r.name.trim()))
@@ -140,13 +153,13 @@ function submit(): void {
   emit('import', {
     rows: pending.value.map((r) => ({
       name: r.name.trim(),
-      gender: r.gender,
       unit: r.unit.trim(),
       rank: r.rank.trim(),
       duty: r.duty.trim(),
       note: r.note.trim()
     })),
-    targetUnitId: targetUnitId.value
+    targetUnitId: targetUnitId.value,
+    allowDuplicate: allowDuplicate.value
   })
   open.value = false
 }
@@ -156,7 +169,9 @@ function submit(): void {
   <UiModal
     v-model="open"
     title="批量导入人员"
-    width="920px"
+    description="Excel / Word / CSV 均可；识别错误的列可在下方改选。"
+    icon="import"
+    width="940px"
   >
     <div v-if="!table" class="imp-start">
       <button
@@ -167,7 +182,7 @@ function submit(): void {
         @dragover.prevent
         @drop.prevent="onDrop"
       >
-        <UiIcon name="import" :size="22" />
+        <span class="imp-drop-art insp-head-art"><UiIcon name="import" :size="24" /></span>
         <span class="imp-drop-title">{{ busy ? '正在解析…' : '选择文件，或把文件拖到这里' }}</span>
         <span class="imp-drop-hint">.xlsx / .xls / .docx / .csv / .txt</span>
       </button>
@@ -179,10 +194,14 @@ function submit(): void {
         @change="onPick"
       />
       <div v-if="error" class="imp-alert error">{{ error }}</div>
-      <ul class="imp-tips">
-        <li>旧版 .doc 请先另存为 .docx；CSV 支持 UTF-8 与 GBK 编码。</li>
-        <li>自动识别的列可在预览里改选。</li>
-      </ul>
+      <div class="imp-tips insp-sec">
+        <div class="insp-title">导入说明</div>
+        <ul>
+          <li>旧版 .doc 请先另存为 .docx；CSV 支持 UTF-8 与 GBK 编码。</li>
+          <li>「姓名」列会自动识别人名与括号内的单位、职级、电话。</li>
+          <li>列名不含「姓名」时，会按内容特征自动挑选最像人名的列。</li>
+        </ul>
+      </div>
     </div>
 
     <template v-else>
@@ -193,7 +212,7 @@ function submit(): void {
         <span class="imp-meta-sep" />
         <span>{{ table.columns.length }} 列</span>
         <span class="grow" />
-        <button type="button" class="imp-reselect" @click="fileInput?.click()">重新选择</button>
+        <UiButton size="xs" icon="rotate" @click="fileInput?.click()">重新选择</UiButton>
         <input
           ref="fileInput"
           type="file"
@@ -204,42 +223,46 @@ function submit(): void {
       </div>
       <div v-if="table.warnings.length" class="imp-alert note">{{ table.warnings.join('；') }}</div>
 
-      <div class="imp-map">
-        <label v-for="f in MAP_FIELDS" :key="f.key" class="imp-map-item">
-          <span class="imp-map-label">{{ f.label }}<i v-if="f.required">*</i></span>
-          <select v-model.number="mapping[f.key]" class="imp-select" @change="rebuild">
-            <option :value="-1">不导入</option>
-            <option v-for="(c, i) in table.columns" :key="f.key + i" :value="i">{{ c }}</option>
-          </select>
-        </label>
-        <label class="imp-map-item">
-          <span class="imp-map-label">空单位归入</span>
-          <select v-model="targetUnitId" class="imp-select">
-            <option v-for="o in unitOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
-        </label>
-      </div>
+      <section class="imp-map insp-sec">
+        <div class="imp-map-head">
+          <div class="insp-title">字段映射 <b>1</b></div>
+          <span class="imp-map-hint">自动匹配表头，可手动改选</span>
+        </div>
+        <div class="imp-map-grid">
+          <div v-for="f in MAP_FIELDS" :key="f.key" class="imp-map-item">
+            <span class="insp-label">{{ f.label }}<i v-if="f.required">*</i></span>
+            <UiSelect
+              :model-value="mapping[f.key]"
+              :options="columnOptions"
+              size="sm"
+              @update:model-value="setMapping(f.key, $event)"
+            />
+          </div>
+          <div class="imp-map-item">
+            <span class="insp-label">空单位归入</span>
+            <UiSelect v-model="targetUnitId" :options="unitOptions" size="sm" placeholder="选择单位" />
+          </div>
+        </div>
+      </section>
 
       <div class="imp-alert error" v-if="error">{{ error }}</div>
 
       <div class="imp-table-wrap">
         <table class="imp-table">
           <colgroup>
-            <col style="width: 52px" />
+            <col style="width: 46px" />
             <col style="width: 116px" />
-            <col style="width: 70px" />
             <col />
             <col />
             <col />
             <col />
-            <col style="width: 86px" />
-            <col style="width: 54px" />
+            <col style="width: 78px" />
+            <col style="width: 58px" />
           </colgroup>
           <thead>
             <tr>
               <th>行</th>
               <th>姓名</th>
-              <th>性别</th>
               <th>单位</th>
               <th>职级</th>
               <th>职务</th>
@@ -251,18 +274,11 @@ function submit(): void {
           <tbody>
             <tr v-for="r in rows" :key="r.line + r.name" :class="{ ignored: r.ignore }">
               <td class="imp-line">{{ r.line }}</td>
-              <td><input v-model="r.name" class="imp-input" placeholder="姓名" /></td>
-              <td>
-                <select v-model="r.gender" class="imp-select small">
-                  <option value="">—</option>
-                  <option value="M">男</option>
-                  <option value="F">女</option>
-                </select>
-              </td>
-              <td><input v-model="r.unit" class="imp-input" list="imp-units" placeholder="未填写" /></td>
-              <td><input v-model="r.rank" class="imp-input" list="imp-ranks" placeholder="未填写" /></td>
-              <td><input v-model="r.duty" class="imp-input" placeholder="如主任" /></td>
-              <td><input v-model="r.note" class="imp-input" placeholder="—" /></td>
+              <td><input v-model="r.name" class="insp-input imp-cell-input" placeholder="姓名" /></td>
+              <td><input v-model="r.unit" class="insp-input imp-cell-input" list="imp-units" placeholder="未填写" /></td>
+              <td><input v-model="r.rank" class="insp-input imp-cell-input" list="imp-ranks" placeholder="未填写" /></td>
+              <td><input v-model="r.duty" class="insp-input imp-cell-input" placeholder="如主任" /></td>
+              <td><input v-model="r.note" class="insp-input imp-cell-input" placeholder="—" /></td>
               <td>
                 <span
                   class="imp-state"
@@ -271,16 +287,26 @@ function submit(): void {
                 >{{ rowStatus(r) === 'ok' ? '正常' : rowStatus(r) === 'warn' ? '提示' : rowStatus(r) === 'error' ? '缺姓名' : '已忽略' }}</span>
               </td>
               <td>
-                <button type="button" class="imp-row-btn" @click="toggleRow(r)">
+                <UiButton variant="ghost" size="xs" @click="toggleRow(r)">
                   {{ r.ignore ? '恢复' : '忽略' }}
-                </button>
+                </UiButton>
               </td>
             </tr>
             <tr v-if="!rows.length">
-              <td colspan="9" class="imp-empty">没有解析出人员行，请检查“姓名”列是否选对。</td>
+              <td colspan="8" class="imp-empty">没有解析出人员行，请检查「姓名」列是否选对。</td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="imp-dup">
+        <UiCheckbox
+          v-model="allowDuplicate"
+          label="允许重名：同姓名且同单位的记录也写入（默认关闭，重名条目会跳过）"
+        />
+        <p class="imp-dup-hint">
+          重名口径：姓名完全一致且归属同一单位。跳过的人员不会静默丢弃，导入结果里可查看名单。
+        </p>
       </div>
 
       <div class="imp-summary">
@@ -301,10 +327,10 @@ function submit(): void {
     </template>
 
     <template #footer>
-      <button class="btn" @click="open = false">取消</button>
-      <button class="btn primary" :disabled="!pending.length" @click="submit">
+      <UiButton variant="ghost" @click="open = false">取消</UiButton>
+      <UiButton variant="primary" :disabled="!pending.length" @click="submit">
         导入 {{ pending.length }} 人
-      </button>
+      </UiButton>
     </template>
   </UiModal>
 </template>
@@ -312,44 +338,33 @@ function submit(): void {
 <style scoped>
 .imp-start { display: flex; flex-direction: column; gap: 12px; }
 .imp-drop {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  height: 148px; border: 1px dashed var(--border-strong); border-radius: 10px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  height: 156px; border: 1px dashed var(--border-strong); border-radius: var(--radius-md);
   background: var(--bg-subtle); color: var(--text-secondary);
-  font-family: inherit; cursor: pointer; transition: border-color .15s, background .15s;
+  font-family: inherit; cursor: pointer; transition: border-color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
 .imp-drop:hover { border-color: var(--primary-line); background: var(--primary-soft); color: var(--primary); }
 .imp-drop.busy { pointer-events: none; color: var(--text-muted); }
-.imp-drop-title { font-size: 13px; }
-.imp-drop-hint { font-size: 11px; color: var(--text-muted); }
+.imp-drop-art { display: inline-flex; align-items: center; justify-content: center; }
+.imp-drop-title { font-size: var(--fs-sm); }
+.imp-drop-hint { font-size: var(--fs-xs); color: var(--text-muted); }
 .imp-file { display: none; }
-.imp-tips { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.9; color: var(--text-muted); }
-.imp-alert { padding: 7px 10px; border-radius: 6px; font-size: 11px; line-height: 1.6; }
-.imp-alert.error { background: var(--danger-soft, #fbf0ee); color: var(--danger, #b4574e); border: 1px solid var(--danger-line, #ead4cf); }
-.imp-alert.note { background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border-soft); }
-.imp-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+.imp-tips { padding-top: 12px; }
+.imp-tips ul { margin: 0; padding-left: 16px; font-size: var(--fs-xs); line-height: 1.9; color: var(--text-muted); }
+.imp-alert { padding: 7px 10px; border-radius: var(--radius-xs); font-size: var(--fs-xs); line-height: 1.6; }
+.imp-alert.error { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger-line); }
+.imp-alert.note { background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border-soft); margin-bottom: 8px; }
+.imp-meta { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 8px; }
 .imp-meta-name { color: var(--text-secondary); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .imp-meta-sep { width: 1px; height: 10px; background: var(--border); }
-.imp-reselect {
-  height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 5px;
-  background: var(--bg); color: var(--text-secondary); font-family: inherit; font-size: 11px; cursor: pointer;
-}
-.imp-reselect:hover { border-color: var(--primary-line); color: var(--primary); }
-.imp-map {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
-  padding: 10px; margin-bottom: 8px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-subtle);
-}
-.imp-map-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.imp-map-label { font-size: 10px; color: var(--text-muted); }
-.imp-map-label i { color: var(--danger, #b4574e); font-style: normal; margin-left: 1px; }
-.imp-select {
-  height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px;
-  background: var(--bg); color: var(--text-primary); font-family: inherit; font-size: 11px; outline: none;
-  min-width: 0; text-overflow: ellipsis;
-}
-.imp-select:focus { border-color: var(--primary-line); box-shadow: 0 0 0 2px var(--primary-soft); }
-.imp-select.small { padding: 0 4px; }
-.imp-table-wrap { max-height: 306px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 8px; }
-.imp-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+.imp-map { padding-top: 0; }
+.imp-map-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.imp-map-hint { font-size: var(--fs-xs); color: var(--text-muted); }
+.imp-map-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; }
+.imp-map-item { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.imp-map-item .insp-label i { color: var(--danger); font-style: normal; margin-left: 1px; }
+.imp-table-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.imp-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-xs); }
 .imp-table th {
   position: sticky; top: 0; z-index: 1;
   padding: 7px 6px; text-align: left; font-weight: 500; color: var(--text-muted);
@@ -357,30 +372,30 @@ function submit(): void {
 }
 .imp-table td { padding: 3px 5px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
 .imp-table tr.ignored td { opacity: .45; }
-.imp-table tr.ignored .imp-row-btn { opacity: 1; }
+.imp-table tr.ignored .btn { opacity: 1; }
 .imp-line { color: var(--text-disabled); font-variant-numeric: tabular-nums; text-align: center; }
-.imp-input {
-  width: 100%; height: 26px; padding: 0 6px; border: 1px solid transparent; border-radius: 4px;
-  background: transparent; color: var(--text-primary); font-family: inherit; font-size: 11px; outline: none;
+.imp-cell-input {
+  height: 26px; padding: 0 6px; border-color: transparent; background: transparent;
+  font-size: var(--fs-xs); border-radius: var(--radius-xs);
 }
-.imp-input:hover { border-color: var(--border-soft); }
-.imp-input:focus { border-color: var(--primary-line); background: var(--bg); box-shadow: 0 0 0 2px var(--primary-soft); }
+.imp-cell-input:hover { border-color: var(--border-soft); }
+.imp-cell-input:focus { border-color: var(--primary); background: var(--bg-panel); }
 .imp-state {
   display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; white-space: nowrap;
 }
-.imp-state.ok { color: var(--success); background: var(--success-soft, #eef6f1); }
-.imp-state.warn { color: var(--warning); background: var(--warning-soft, #fbf6ec); }
-.imp-state.error { color: var(--danger, #b4574e); background: var(--danger-soft, #fbf0ee); }
+.imp-state.ok { color: var(--success); background: var(--success-soft); }
+.imp-state.warn { color: var(--warning); background: var(--warning-soft); }
+.imp-state.error { color: var(--danger); background: var(--danger-soft); }
 .imp-state.ignored { color: var(--text-disabled); background: var(--bg-hover); }
-.imp-row-btn {
-  height: 22px; padding: 0 6px; border: 1px solid transparent; border-radius: 4px;
-  background: none; color: var(--text-muted); font-family: inherit; font-size: 10px; cursor: pointer;
-}
-.imp-row-btn:hover { border-color: var(--border); color: var(--primary); }
 .imp-empty { padding: 24px 0; text-align: center; color: var(--text-muted); }
+.imp-dup {
+  margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-subtle);
+}
+.imp-dup-hint { margin: 4px 0 0; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
 .imp-summary {
   display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
-  margin-top: 8px; font-size: 11px; color: var(--text-muted);
+  margin-top: 8px; font-size: var(--fs-xs); color: var(--text-muted);
 }
 .imp-summary b { font-weight: 500; color: var(--text-primary); }
 .imp-summary .warn { color: var(--warning); }

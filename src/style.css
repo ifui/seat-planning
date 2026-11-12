@@ -1478,6 +1478,195 @@ details.ui-fold[open] > summary::before {
   width: 118px;
   flex: none;
 }
+/* 名册多选 */
+.roster-table th.roster-check-head,
+.roster-table td.roster-check-cell {
+  padding: 0 0 0 10px;
+  text-align: left;
+  width: 34px;
+}
+.roster-check {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.roster-row.is-checked {
+  background: var(--primary-soft);
+}
+.roster-bulk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.roster-bulk b {
+  color: var(--primary);
+  font-weight: 600;
+}
+.confirm-points {
+  margin: 12px 0 0;
+  padding: 10px 12px 10px 26px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-size: var(--fs-xs);
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+.confirm-points li + li {
+  margin-top: 2px;
+}
+.roster-toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.roster-sort-reset {
+  color: var(--primary-hover);
+}
+.roster-dup-tag {
+  flex: none;
+  padding: 0 5px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: var(--radius-xs);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* 查找重复名字 */
+.dup-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.dup-summary b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.dup-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 0 18px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.dup-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.dup-group + .dup-group {
+  border-top: 1px solid var(--border-soft);
+}
+.dup-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 2px 6px;
+}
+.dup-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.dup-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--motion-fast) ease;
+}
+.dup-group.open .dup-chevron {
+  transform: rotate(90deg);
+}
+.dup-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.dup-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dup-members {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 8px 26px;
+}
+.dup-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.dup-unit {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.dup-rank {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dup-tag {
+  flex: none;
+  padding: 0 5px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.dup-tag.leave {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+.dup-tag.marked {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.dup-tag.keep {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+.roster-bulk-hint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
 /* 名册拖拽排序 */
 .roster-table th.roster-drag-head,
 .roster-table td.roster-drag-cell {
@@ -1579,6 +1768,62 @@ details.ui-fold[open] > summary::before {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+
+.import-result {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.import-result-line b {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.import-result-line b.warn { color: var(--warning); }
+.import-result-extra {
+  margin: 6px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.import-skip {
+  margin-top: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.import-skip-title {
+  padding: 7px 10px;
+  font-size: var(--fs-xs);
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+.import-skip-title span {
+  color: var(--text-muted);
+}
+.import-skip ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow: auto;
+}
+.import-skip li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: var(--fs-xs);
+  border-bottom: 1px solid var(--border-soft);
+}
+.import-skip li:last-child { border-bottom: none; }
+.import-skip-name { color: var(--text-primary); }
+.import-skip-unit {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .roster-foot {

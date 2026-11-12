@@ -86,47 +86,143 @@ const disabledSeats = computed(() => seats.value.filter((s) => s.disabled).lengt
 const availableSeats = computed(() => seats.value.length - disabledSeats.value)
 /** 可用座位 id：已就座必须是它子集，避免名册/布局变化后数字互相矛盾 */
 const availableSeatIds = computed(() => new Set(seats.value.filter((s) => !s.disabled).map((s) => s.seatId)))
-const assignedSeats = computed(() => {
+/** 有效就座：成员未请假且座位仍可用 */
+const seatedSeatIds = computed(() => {
+  const p = project.value
+  if (!p) return new Set<string>()
+  const byMember = new Map(members.value.map((m) => [m.id, m.status]))
+  return new Set(
+    p.assignments
+      .filter((a) => byMember.get(a.memberId) !== 'leave' && availableSeatIds.value.has(a.seatId))
+      .map((a) => a.seatId)
+  )
+})
+const assignedSeats = computed(() => seatedSeatIds.value.size)
+const seatedMemberIds = computed(
+  () =>
+    new Set(
+      (project.value?.assignments ?? [])
+        .filter((a) => seatedSeatIds.value.has(a.seatId))
+        .map((a) => a.memberId)
+    )
+)
+/** 应到人数：参会名单（缺省为整套名册）中的在位人员 */
+const expectedCount = computed(() => {
   const p = project.value
   if (!p) return 0
-  const byMember = new Map(members.value.map((m) => [m.id, m.status]))
-  return p.assignments.filter(
-    (a) => byMember.get(a.memberId) !== 'leave' && availableSeatIds.value.has(a.seatId)
-  ).length
+  const byId = new Map(members.value.map((m) => [m.id, m]))
+  const ids = p.participantIds?.length ? p.participantIds : members.value.map((m) => m.id)
+  return ids.filter((id) => byId.get(id) && byId.get(id)!.status !== 'leave').length
 })
-const freeSeats = computed(() => Math.max(0, availableSeats.value - assignedSeats.value))
 
-const zoneRows = computed(() => {
-  const zones = new Map((project.value?.seatOverlay?.zones ?? []).map((z) => [z.id, z.name]))
-  const counts = new Map<string, number>()
-  for (const s of seats.value) {
-    if (s.disabled) continue
-    const id = s.zoneId && zones.has(s.zoneId) ? s.zoneId : ''
-    counts.set(id, (counts.get(id) ?? 0) + 1)
+// ---- 图表数据：全部取自当前项目的名册快照 / 布局 / 覆盖层 / 历史快照 ----
+
+/** 职级结构：每个职级在位 / 请假人数，按职级序列自上而下 */
+const rankRows = computed(() => {
+  const ranks = [...(roster.value?.ranks ?? [])].sort((a, b) => a.order - b.order)
+  const known = new Set(ranks.map((r) => r.id))
+  const rows = ranks.map((r) => {
+    const list = members.value.filter((m) => m.rankId === r.id)
+    return {
+      name: r.name,
+      present: list.filter((m) => m.status !== 'leave').length,
+      leave: list.filter((m) => m.status === 'leave').length
+    }
+  })
+  const unknown = members.value.filter((m) => !known.has(m.rankId))
+  if (unknown.length) {
+    rows.push({
+      name: '未定级',
+      present: unknown.filter((m) => m.status !== 'leave').length,
+      leave: unknown.filter((m) => m.status === 'leave').length
+    })
   }
-  const rows = [...counts.entries()]
-    .map(([id, value]) => ({ name: id ? zones.get(id)! : '未分区', value }))
-    .sort((a, b) => b.value - a.value)
-  if (rows.length > 8) {
-    const head = rows.slice(0, 7)
-    const rest = rows.slice(7).reduce((n, r) => n + r.value, 0)
-    head.push({ name: '其他', value: rest })
-    return head
+  return rows.filter((r) => r.present + r.leave > 0)
+})
+const rankChartHeight = computed(() => {
+  const n = rankRows.value.length
+  return n ? Math.min(210, Math.max(128, n * 26 + 34)) : 128
+})
+
+/** 区域占用：每个区域已坐 / 空闲 / 停用座位数 */
+const zoneSeatRows = computed(() => {
+  const p = project.value
+  if (!p) return []
+  const zones = new Map((p.seatOverlay?.zones ?? []).map((z) => [z.id, z.name]))
+  const rows = new Map<string, { name: string; seated: number; free: number; disabled: number }>()
+  for (const s of seats.value) {
+    const id = s.zoneId && zones.has(s.zoneId) ? s.zoneId : ''
+    const name = id ? zones.get(id)! : '未分区'
+    const row = rows.get(id) ?? { name, seated: 0, free: 0, disabled: 0 }
+    if (s.disabled) row.disabled++
+    else if (seatedSeatIds.value.has(s.seatId)) row.seated++
+    else row.free++
+    rows.set(id, row)
+  }
+  const list = [...rows.values()]
+    .filter((r) => r.seated + r.free + r.disabled > 0)
+    .sort((a, b) => b.seated + b.free - (a.seated + a.free) || a.name.localeCompare(b.name, 'zh-CN'))
+  if (list.length > 7) {
+    const rest = list.slice(6)
+    list.splice(6, rest.length, {
+      name: `其他 ${rest.length} 个区域`,
+      seated: rest.reduce((n, r) => n + r.seated, 0),
+      free: rest.reduce((n, r) => n + r.free, 0),
+      disabled: rest.reduce((n, r) => n + r.disabled, 0)
+    })
+  }
+  return list
+})
+const zoneChartHeight = computed(() => {
+  const n = zoneSeatRows.value.length
+  return n ? Math.min(210, Math.max(128, n * 26 + 34)) : 128
+})
+
+/** 待排人员：应到但还没有有效座位的人，按单位聚合 */
+const pendingRows = computed(() => {
+  const p = project.value
+  if (!p) return []
+  const byId = new Map(members.value.map((m) => [m.id, m]))
+  const ids = p.participantIds?.length ? p.participantIds : members.value.map((m) => m.id)
+  const unitOf = (id: string): string => roster.value?.units.find((u) => u.id === id)?.name ?? '未分单位'
+  const counts = new Map<string, number>()
+  for (const id of ids) {
+    const m = byId.get(id)
+    if (!m || m.status === 'leave' || seatedMemberIds.value.has(id)) continue
+    counts.set(m.unitId, (counts.get(m.unitId) ?? 0) + 1)
+  }
+  const rows = [...counts.entries()].map(([id, value]) => ({ id, name: unitOf(id), value }))
+  rows.sort((a, b) => b.value - a.value || a.name.localeCompare(b.name, 'zh-CN'))
+  if (rows.length > 6) {
+    const rest = rows.slice(5)
+    rows.splice(5, rest.length, {
+      id: '__other',
+      name: `其他 ${rest.length} 个单位`,
+      value: rest.reduce((n, r) => n + r.value, 0)
+    })
   }
   return rows
 })
-const zoneSeatTotal = computed(() => zoneRows.value.reduce((n, r) => n + r.value, 0))
-
-const snapshotRows = computed(() => {
-  const map = new Map<string, number>()
-  for (const s of snapshots.value) {
-    const date = (s.createdAt || '').slice(0, 10)
-    if (date) map.set(date, (map.get(date) ?? 0) + 1)
-  }
-  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, value]) => ({ date, value }))
+const pendingTotal = computed(() => pendingRows.value.reduce((n, r) => n + r.value, 0))
+const pendingChartHeight = computed(() => {
+  const n = pendingRows.value.length
+  return n ? Math.min(210, Math.max(110, n * 26 + 8)) : 110
 })
-const snapshotBytes = computed(() =>
-  snapshots.value.length ? new TextEncoder().encode(JSON.stringify(snapshots.value)).length : 0
+const pendingEmptyText = computed(() =>
+  members.value.length ? '应到人员已全部就座' : '项目还没有名册数据'
+)
+
+/** 版本进度：最近 12 个快照各自保存的已排人数 */
+const snapshotProgress = computed(() =>
+  [...snapshots.value]
+    .filter((s) => !!s.createdAt)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(-12)
+    .map((s) => ({
+      label: s.createdAt.slice(5, 16).replace('T', ' '),
+      time: s.createdAt,
+      value: s.assignments?.length ?? 0
+    }))
 )
 /** 仓储按主键返回，不保证时间序：显式取最新一条 */
 const latestSnapshot = computed(() =>
@@ -137,114 +233,23 @@ const latestSnapshot = computed(() =>
 )
 
 // ---------- 图表 ----------
-const pieBase = {
-  tooltip: { ...chartTooltip, trigger: 'item' as const, formatter: '{b}<br/>{c} 人 · {d}%' },
-  legend: {
-    bottom: 0,
-    left: 'center',
-    icon: 'circle',
-    itemWidth: 7,
-    itemHeight: 7,
-    itemGap: 12,
-    textStyle: { ...chartAxisText, fontSize: 11 }
-  }
+const chartLegend = {
+  bottom: 0,
+  left: 'center' as const,
+  icon: 'circle',
+  itemWidth: 7,
+  itemHeight: 7,
+  itemGap: 12,
+  textStyle: { ...chartAxisText, fontSize: 11 }
 }
 
-const memberChart = computed<ChartOption | null>(() => {
-  if (!members.value.length) return null
+/** 职级结构：按职级序列的横向双条，在职级维度看人力与请假 */
+const rankChart = computed<ChartOption | null>(() => {
+  const rows = rankRows.value
+  if (!rows.length) return null
   return {
-    ...pieBase,
-    series: [{
-      type: 'pie',
-      radius: ['54%', '74%'],
-      center: ['50%', '43%'],
-      avoidLabelOverlap: true,
-      label: { show: false },
-      labelLine: { show: false },
-      itemStyle: { borderColor: chartColors.bgPanel, borderWidth: 2 },
-      data: [
-        { name: '在位', value: presentCount.value, itemStyle: { color: chartColors.success } },
-        { name: '请假', value: leaveCount.value, itemStyle: { color: chartColors.warning } }
-      ]
-    }]
-  } as ChartOption
-})
-
-const seatChart = computed<ChartOption | null>(() => {
-  if (!seats.value.length) return null
-  return {
-    ...pieBase,
-    tooltip: { ...chartTooltip, trigger: 'item', formatter: '{b}<br/>{c} 个座位 · {d}%' },
-    series: [{
-      type: 'pie',
-      radius: ['54%', '74%'],
-      center: ['50%', '43%'],
-      avoidLabelOverlap: true,
-      label: { show: false },
-      labelLine: { show: false },
-      itemStyle: { borderColor: chartColors.bgPanel, borderWidth: 2 },
-      data: [
-        { name: '已就座', value: assignedSeats.value, itemStyle: { color: chartColors.success } },
-        { name: '空位', value: freeSeats.value, itemStyle: { color: chartColors.primary } },
-        { name: '不坐人', value: disabledSeats.value, itemStyle: { color: chartColors.muted } }
-      ]
-    }]
-  } as ChartOption
-})
-
-const zonePalette = [chartColors.primary, chartColors.info, chartColors.warning, chartColors.success, chartColors.muted]
-
-const zoneChart = computed<ChartOption | null>(() => {
-  if (!zoneRows.value.length) return null
-  return {
-    tooltip: {
-      ...chartTooltip,
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' },
-      formatter: (params: any) => {
-        const p = Array.isArray(params) ? params[0] : params
-        return `${p.name}<br/>${p.value} 个座位`
-      }
-    },
-    grid: { left: 0, right: 28, top: 4, bottom: 0, containLabel: true },
-    xAxis: {
-      type: 'value',
-      minInterval: 1,
-      axisLabel: { ...chartAxisText },
-      splitLine: { lineStyle: { color: chartColors.borderSoft } },
-      axisLine: { show: false },
-      axisTick: { show: false }
-    },
-    yAxis: {
-      type: 'category',
-      inverse: true,
-      data: zoneRows.value.map((r) => r.name),
-      axisLabel: { ...chartAxisText, width: 76, overflow: 'truncate' },
-      axisLine: { show: false },
-      axisTick: { show: false }
-    },
-    series: [{
-      type: 'bar',
-      barWidth: 9,
-      data: zoneRows.value.map((r, i) => ({ value: r.value, itemStyle: { color: zonePalette[i % zonePalette.length] } })),
-      itemStyle: { borderRadius: [0, 4, 4, 0] },
-      showBackground: true,
-      backgroundStyle: { color: chartColors.bgHover, borderRadius: [0, 4, 4, 0] },
-      label: {
-        show: true,
-        position: 'right',
-        color: chartColors.textSecondary,
-        fontSize: 11,
-        fontFamily: chartFont
-      }
-    }]
-  } as ChartOption
-})
-
-const trendChart = computed<ChartOption | null>(() => {
-  if (!snapshotRows.value.length) return null
-  const rows = snapshotRows.value
-  return {
+    animationDuration: 320,
+    legend: chartLegend,
     tooltip: {
       ...chartTooltip,
       trigger: 'axis',
@@ -252,14 +257,182 @@ const trendChart = computed<ChartOption | null>(() => {
       formatter: (params: any) => {
         const p = Array.isArray(params) ? params[0] : params
         const row = rows[p.dataIndex]
-        return `${row?.date ?? p.name}<br/>${p.value} 条快照`
+        return `${row.name}<br/>在位 ${row.present} 人 · 请假 ${row.leave} 人`
+      }
+    },
+    grid: { left: 0, right: 16, top: 6, bottom: 22, containLabel: true },
+    xAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { ...chartAxisText, color: chartColors.muted },
+      splitLine: { lineStyle: { color: chartColors.borderSoft } },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map((r) => r.name),
+      axisLabel: { ...chartAxisText, width: 54, overflow: 'truncate', ellipsis: '…' },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    series: [
+      {
+        name: '在位',
+        type: 'bar',
+        barWidth: 7,
+        data: rows.map((r) => r.present),
+        itemStyle: { color: chartColors.primary, borderRadius: [0, 2, 2, 0] }
+      },
+      {
+        name: '请假',
+        type: 'bar',
+        barWidth: 7,
+        data: rows.map((r) => r.leave),
+        itemStyle: { color: chartColors.warning, borderRadius: [0, 2, 2, 0] }
+      }
+    ]
+  } as ChartOption
+})
+
+/** 区域占用：每个区域座位被真实使用的比例（堆叠：已坐 / 空闲 / 停用） */
+const zoneChart = computed<ChartOption | null>(() => {
+  const rows = zoneSeatRows.value
+  if (!rows.length) return null
+  return {
+    animationDuration: 320,
+    legend: chartLegend,
+    tooltip: {
+      ...chartTooltip,
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: any) => {
+        const p = Array.isArray(params) ? params[0] : params
+        const row = rows[p.dataIndex]
+        const usable = row.seated + row.free
+        const rate = usable ? Math.round((row.seated / usable) * 100) : 0
+        return `${row.name}<br/>已坐 ${row.seated} · 空闲 ${row.free} · 停用 ${row.disabled}<br/>占用率 ${rate}%`
+      }
+    },
+    grid: { left: 0, right: 16, top: 6, bottom: 22, containLabel: true },
+    xAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { ...chartAxisText, color: chartColors.muted },
+      splitLine: { lineStyle: { color: chartColors.borderSoft } },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map((r) => r.name),
+      axisLabel: { ...chartAxisText, width: 66, overflow: 'truncate', ellipsis: '…' },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    series: [
+      {
+        name: '已坐',
+        type: 'bar',
+        stack: 'seat',
+        barWidth: 10,
+        data: rows.map((r) => r.seated),
+        itemStyle: { color: chartColors.primary }
+      },
+      {
+        name: '空闲',
+        type: 'bar',
+        stack: 'seat',
+        barWidth: 10,
+        data: rows.map((r) => r.free),
+        itemStyle: { color: 'rgba(74, 124, 123, 0.16)' }
+      },
+      {
+        name: '停用',
+        type: 'bar',
+        stack: 'seat',
+        barWidth: 10,
+        data: rows.map((r) => r.disabled),
+        itemStyle: { color: 'rgba(139, 147, 160, 0.35)', borderRadius: [0, 4, 4, 0] }
+      }
+    ]
+  } as ChartOption
+})
+
+/** 待排人员：应到但还没坐下的人，按单位看缺口，全部排完则为空态 */
+const pendingChart = computed<ChartOption | null>(() => {
+  const rows = pendingRows.value
+  if (!rows.length) return null
+  return {
+    animationDuration: 320,
+    tooltip: {
+      ...chartTooltip,
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: any) => {
+        const p = Array.isArray(params) ? params[0] : params
+        return `${p.name}<br/>待排 ${p.value} 人`
+      }
+    },
+    grid: { left: 0, right: 26, top: 6, bottom: 0, containLabel: true },
+    xAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { ...chartAxisText, color: chartColors.muted },
+      splitLine: { lineStyle: { color: chartColors.borderSoft } },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map((r) => r.name),
+      axisLabel: { ...chartAxisText, width: 78, overflow: 'truncate', ellipsis: '…' },
+      axisLine: { show: false },
+      axisTick: { show: false }
+    },
+    series: [{
+      type: 'bar',
+      barWidth: 9,
+      data: rows.map((r) => r.value),
+      itemStyle: { color: chartColors.warning, borderRadius: [0, 4, 4, 0] },
+      showBackground: true,
+      backgroundStyle: { color: chartColors.bgHover, borderRadius: [0, 4, 4, 0] },
+      label: {
+        show: true,
+        position: 'right',
+        distance: 6,
+        color: chartColors.muted,
+        fontSize: 11,
+        fontFamily: chartFont
+      }
+    }]
+  } as ChartOption
+})
+
+/** 版本进度：每个历史快照保存的已排人数，看排座是否在推进 */
+const snapshotChart = computed<ChartOption | null>(() => {
+  const rows = snapshotProgress.value
+  if (!rows.length) return null
+  return {
+    animationDuration: 320,
+    tooltip: {
+      ...chartTooltip,
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: any) => {
+        const p = Array.isArray(params) ? params[0] : params
+        const row = rows[p.dataIndex]
+        return `${fmtTime(row.time)}<br/>已排 ${row.value} 人`
       }
     },
     grid: { left: 0, right: 8, top: 14, bottom: 0, containLabel: true },
     xAxis: {
       type: 'category',
-      data: rows.map((r) => r.date.slice(5)),
-      axisLabel: { ...chartAxisText, interval: rows.length > 9 ? 'auto' : 0 },
+      data: rows.map((r) => r.label),
+      axisLabel: { ...chartAxisText, interval: rows.length > 8 ? 'auto' : 0 },
       axisLine: { lineStyle: { color: chartColors.borderSoft } },
       axisTick: { show: false }
     },
@@ -276,7 +449,13 @@ const trendChart = computed<ChartOption | null>(() => {
       data: rows.map((r) => r.value),
       barMaxWidth: 22,
       itemStyle: { color: chartColors.info, borderRadius: [4, 4, 0, 0] },
-      label: { show: rows.length <= 9, position: 'top', color: chartColors.textSecondary, fontSize: 11, fontFamily: chartFont }
+      label: {
+        show: rows.length <= 9,
+        position: 'top',
+        color: chartColors.textSecondary,
+        fontSize: 11,
+        fontFamily: chartFont
+      }
     }]
   } as ChartOption
 })
@@ -412,34 +591,34 @@ async function clearAll(): Promise<void> {
       <div class="overview-grid">
         <div class="ov-block">
           <div class="ov-head">
-            <span class="ov-title">名册状态</span>
-            <span class="ov-meta">{{ roster?.members ? (project.rosterSnapshot ? '名册快照' : '实时名册') : '无名册' }} · {{ members.length }} 人</span>
+            <span class="ov-title">职级结构</span>
+            <span class="ov-meta">职级序列 · 请假 {{ leaveCount }} 人</span>
           </div>
-          <UiChart :option="memberChart" :height="168" empty-text="项目还没有名册数据" />
+          <UiChart :option="rankChart" :height="rankChartHeight" empty-text="项目还没有名册数据" />
         </div>
 
         <div class="ov-block">
           <div class="ov-head">
-            <span class="ov-title">座位构成</span>
-            <span class="ov-meta">已就座 {{ assignedSeats }} / 可用 {{ availableSeats }}</span>
+            <span class="ov-title">区域占用</span>
+            <span class="ov-meta">已坐 {{ assignedSeats }} / 可用 {{ availableSeats }}</span>
           </div>
-          <UiChart :option="seatChart" :height="168" empty-text="布局中没有座位" />
+          <UiChart :option="zoneChart" :height="zoneChartHeight" empty-text="布局中没有座位" />
         </div>
 
         <div class="ov-block">
           <div class="ov-head">
-            <span class="ov-title">区域分布</span>
-            <span class="ov-meta">{{ zoneRows.length }} 个区域 · {{ zoneSeatTotal }} 座</span>
+            <span class="ov-title">待排人员</span>
+            <span class="ov-meta">应到 {{ expectedCount }} 人 · 待排 {{ pendingTotal }} 人</span>
           </div>
-          <UiChart :option="zoneChart" :height="168" empty-text="还没有划分区域" />
+          <UiChart :option="pendingChart" :height="pendingChartHeight" :empty-text="pendingEmptyText" />
         </div>
 
         <div class="ov-block">
           <div class="ov-head">
-            <span class="ov-title">快照趋势</span>
-            <span class="ov-meta">{{ snapshots.length }} 条 · {{ fmtBytes(snapshotBytes) }}</span>
+            <span class="ov-title">版本进度</span>
+            <span class="ov-meta">共 {{ snapshots.length }} 个版本 · 最近 {{ snapshotProgress.length }} 个</span>
           </div>
-          <UiChart :option="trendChart" :height="168" empty-text="还没有历史快照" />
+          <UiChart :option="snapshotChart" :height="168" empty-text="还没有历史快照" />
         </div>
       </div>
     </template>

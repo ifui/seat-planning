@@ -2,9 +2,9 @@
 //!
 //! 前端通过 `src/platform/files.ts` 与 `src/data/sqlite-repository.ts` 调用这里：
 //! - `save_file_bytes`：把导出内容写到用户在保存对话框里选定的路径；
-//! - `write_temp_file`：把打印页写到临时目录，再交给系统程序打开；
-//! - `open_path`：用系统默认程序打开文件（打印页走浏览器打印）；
 //! - `db_execute` / `db_select`：在应用数据目录下的 seat-planning.db 上执行 SQL。
+//!
+//! 打印走 WebView2 的原生 `window.print()`，不再需要落临时页或系统浏览器。
 //!
 //! v1 没有官方 SQL 插件可用，因此用 rusqlite 复刻原插件暴露的 execute/select 语义，
 //! 前端仓储实现只换调用通道，表结构与接口边界保持不变。
@@ -55,36 +55,6 @@ fn save_file_bytes(path: String, base64: String) -> Result<(), String> {
     fs::write(&path, bytes).map_err(|e| format!("写入文件失败: {e}"))
 }
 
-/// 在系统临时目录下写一个文件，返回绝对路径
-#[tauri::command]
-fn write_temp_file(name: String, base64: String) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("seat-planning");
-    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-    let path = dir.join(name);
-    let bytes = STANDARD
-        .decode(base64.as_bytes())
-        .map_err(|e| format!("文件内容解码失败: {e}"))?;
-    fs::write(&path, bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-/// 用系统默认程序打开本地文件
-#[tauri::command]
-fn open_path(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &path])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(&path).spawn();
-    #[cfg(target_os = "linux")]
-    let result = std::process::Command::new("xdg-open").arg(&path).spawn();
-
-    result
-        .map(|_| ())
-        .map_err(|e| format!("打开文件失败: {e}"))
-}
-
 /// 执行写语句，返回受影响行数
 #[tauri::command]
 fn db_execute(db: State<Db>, sql: String, params: Vec<Value>) -> Result<usize, String> {
@@ -133,8 +103,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             save_file_bytes,
-            write_temp_file,
-            open_path,
             db_execute,
             db_select
         ])

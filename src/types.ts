@@ -27,11 +27,12 @@ export interface Member {
   /** 职务（如主任、处长）：仅用于展示与筛选，不参与排序 */
   duty?: string
   aliases: string[]
-  gender?: 'M' | 'F'
   note?: string
   status: MemberStatus
   /** 名册顺序（拖拽排序）：排座时同一职级、同一单位内的最终依据 */
   order?: number
+  /** 疑似重名标记：仅在名册里做人工标记，不参与排座 */
+  duplicateMark?: boolean
 }
 
 export interface RosterPlan {
@@ -40,6 +41,12 @@ export interface RosterPlan {
   ranks: RankDef[]
   units: UnitNode[]
   members: Member[]
+  /**
+   * 列表展示顺序：
+   * - 缺省（false / 未设置）：按职级序列 order 升序，同级按 member.order；
+   * - true：用户拖拽过的顺序，完全以 member.order 为准。
+   */
+  manualOrder?: boolean
   createdAt: string
   updatedAt: string
 }

@@ -14,7 +14,6 @@ export interface RawTable {
 
 export interface FieldMap {
   name: number
-  gender: number
   unit: number
   rank: number
   duty: number
@@ -24,7 +23,6 @@ export interface FieldMap {
 export interface ParsedPerson {
   line: number
   name: string
-  gender: '' | 'M' | 'F'
   unit: string
   rank: string
   duty: string
@@ -32,8 +30,11 @@ export interface ParsedPerson {
   issues: string[]
 }
 
-const GENDER_MALE = /^(男|男性|男士|先生|m|male)$/i
-const GENDER_FEMALE = /^(女|女性|女士|mrs?|ms|f|female)$/i
+/**
+ * 性别词只作为「不是人名」的判断依据：表格里残留的「男 / 女」列不会被人名识别误吞，
+ * 也不再进入人员模型（名册不存储、不导入性别）。
+ */
+const SEX_WORD_RE = /^(男|男性|男士|先生|女|女性|女士|mrs?|ms|m|f|male|female)$/i
 const PHONE_RE = /^\+?[\d\s-]{7,}$/
 const RANK_WORD_RE =
   /(书记|主任|处长|科长|局长|部长|厅长|院长|经理|总监|主管|主席|委员|巡视员|调研员|科员|办事员|干事|专员|组长|队长|班长|工程师|会计师|经济师|技师|处级|科级|局级|厅级|部级)$/
@@ -209,7 +210,7 @@ async function readDocxLines(file: File): Promise<string[]> {
 function isNameLike(s: string): boolean {
   if (!s) return false
   if (HEADER_WORDS.test(s)) return false
-  if (GENDER_MALE.test(s) || GENDER_FEMALE.test(s)) return false
+  if (SEX_WORD_RE.test(s)) return false
   if (RANK_WORD_RE.test(s) || UNIT_WORD_RE.test(s)) return false
   if (PHONE_RE.test(s)) return false
   if (/^[\u4e00-\u9fa5·]{2,6}$/.test(s)) return true
@@ -217,15 +218,14 @@ function isNameLike(s: string): boolean {
   return false
 }
 
-/** 从一行首列文本中识别人名，并收集括号/空格/短横线后的单位、职级、性别、备注 */
+/** 从一行首列文本中识别人名，并收集括号/空格/短横线后的单位、职级、备注 */
 export function parseNameCell(raw: string): {
   names: string[]
-  gender: '' | 'M' | 'F'
   unit: string
   rank: string
   notes: string[]
 } {
-  const out = { names: [] as string[], gender: '' as '' | 'M' | 'F', unit: '', rank: '', notes: [] as string[] }
+  const out = { names: [] as string[], unit: '', rank: '', notes: [] as string[] }
   let s = raw.replace(/\u3000/g, ' ').trim()
   if (!s) return out
   s = s.replace(/^["'“”‘’[\【】\s]+|["'“”‘’\]】\s]+$/g, '')
@@ -267,9 +267,8 @@ export function parseNameCell(raw: string): {
   const absorb = (t: string, fallback: 'unit' | 'note' = 'note'): void => {
     if (!t) return
     if (/^\d{1,5}$/.test(t)) return
-    if (GENDER_MALE.test(t)) out.gender = out.gender || 'M'
-    else if (GENDER_FEMALE.test(t)) out.gender = out.gender || 'F'
-    else if (PHONE_RE.test(t)) out.notes.push(`电话 ${t.replace(/[\s-]/g, '')}`)
+    if (SEX_WORD_RE.test(t)) return
+    if (PHONE_RE.test(t)) out.notes.push(`电话 ${t.replace(/[\s-]/g, '')}`)
     else if (RANK_WORD_RE.test(t)) out.rank = out.rank || t
     else if (UNIT_WORD_RE.test(t)) out.unit = out.unit || t
     else if (fallback === 'unit') out.unit = out.unit || t
@@ -353,11 +352,10 @@ export async function readRosterFile(file: File): Promise<RawTable> {
 
 /** 根据表头与内容特征推断字段列 */
 export function suggestMapping(table: RawTable): FieldMap {
-  const map: FieldMap = { name: -1, gender: -1, unit: -1, rank: -1, duty: -1, note: -1 }
+  const map: FieldMap = { name: -1, unit: -1, rank: -1, duty: -1, note: -1 }
   const headers = table.columns
   const byHeader = (re: RegExp): number => headers.findIndex((h) => re.test(h.trim()))
   map.name = byHeader(/姓名|名字|人员|成员|员工|参会人|与会人/)
-  map.gender = byHeader(/性别/)
   map.unit = byHeader(/单位|部门|科室|机构|所属/)
   map.rank = byHeader(/职级|级别|职称/)
   map.duty = byHeader(/职务|职位|岗位/)
@@ -384,16 +382,6 @@ export function suggestMapping(table: RawTable): FieldMap {
     if (best >= 0 && bestScore >= 0.5) map.name = best
   }
   if (map.name < 0) map.name = 0
-  if (map.gender < 0) {
-    for (let c = 0; c < table.columns.length; c++) {
-      if (c === map.name) continue
-      const vals = table.rows.slice(0, 20).map((r) => clean(r[c])).filter(Boolean)
-      if (vals.length && vals.filter((v) => GENDER_MALE.test(v) || GENDER_FEMALE.test(v)).length / vals.length > 0.6) {
-        map.gender = c
-        break
-      }
-    }
-  }
   return map
 }
 
@@ -407,7 +395,6 @@ export function buildRows(table: RawTable, map: FieldMap): ParsedPerson[] {
     const mappedUnit = map.unit >= 0 ? clean(row[map.unit]) : ''
     const mappedRank = map.rank >= 0 ? clean(row[map.rank]) : ''
     const mappedDuty = map.duty >= 0 ? clean(row[map.duty]) : ''
-    const mappedGender = map.gender >= 0 ? clean(row[map.gender]) : ''
     const mappedNote = map.note >= 0 ? clean(row[map.note]) : ''
     if (!rawName && !mappedUnit && !mappedRank && !mappedDuty && !mappedNote) return
 
@@ -416,12 +403,6 @@ export function buildRows(table: RawTable, map: FieldMap): ParsedPerson[] {
     for (const name of names) {
       const issues: string[] = []
       if (!name) issues.push('未识别到姓名')
-      let gender: '' | 'M' | 'F' = parsed.gender
-      if (mappedGender) {
-        if (GENDER_MALE.test(mappedGender)) gender = 'M'
-        else if (GENDER_FEMALE.test(mappedGender)) gender = 'F'
-        else if (name) issues.push(`性别「${mappedGender}」无法识别`)
-      }
       const unit = mappedUnit || parsed.unit
       const rank = mappedRank || parsed.rank
       const notes = [...parsed.notes]
@@ -431,7 +412,7 @@ export function buildRows(table: RawTable, map: FieldMap): ParsedPerson[] {
         if (prev) issues.push(`与第 ${prev} 行重名`)
         else seen.set(name, line)
       }
-      out.push({ line, name, gender, unit, rank, duty: mappedDuty, note: notes.join('；'), issues })
+      out.push({ line, name, unit, rank, duty: mappedDuty, note: notes.join('；'), issues })
     }
   })
   return out

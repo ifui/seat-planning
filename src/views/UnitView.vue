@@ -3,6 +3,13 @@ import { computed, ref, watch } from 'vue'
 import type { RosterPlan, UnitNode } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
+import {
+  duplicateUnitGroups,
+  nameKey,
+  normalizeName,
+  unitPathOf,
+  type UnitDuplicateGroup,
+} from '../engine/unitMatch'
 import { UiButton, UiIconButton, UiInput, UiModal, UiSelect } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
@@ -97,20 +104,25 @@ const coveredMembers = computed(() => {
   return draft.value.members.filter((m) => draft.value!.units.some((u) => u.id === m.unitId)).length
 })
 
-async function persist(): Promise<void> {
-  if (!draft.value) return
-  await saveRoster(draft.value)
-  dirty.value = false
+async function persist(): Promise<boolean> {
+  if (!draft.value) return true
+  try {
+    await saveRoster(draft.value)
+    dirty.value = false
+    return true
+  } catch (e: any) {
+    flash(e?.message || '保存失败')
+    return false
+  }
 }
 
 async function save(): Promise<void> {
   if (!draft.value) return
-  await persist()
-  flash('单位编制序列已保存')
+  if (await persist()) flash('单位编制序列已保存')
 }
 
 async function back(): Promise<void> {
-  if (dirty.value) await persist()
+  if (dirty.value && !(await persist())) return
   emit('back')
 }
 
@@ -227,8 +239,17 @@ function openEdit(u: UnitNode): void {
 
 function submitUnit(): void {
   if (!draft.value) return
-  const name = form.value.name.trim()
+  const name = normalizeName(form.value.name)
   if (!name) { flash('请填写单位名称'); return }
+  // 单位名称全树唯一：重名直接拦下，并说明和哪个已有单位冲突
+  const key = nameKey(name)
+  const clash = draft.value.units.find(
+    (u) => u.id !== editingId.value && nameKey(u.name) === key
+  )
+  if (clash) {
+    flash(`「${name}」与已有单位重名（${unitPathOf(draft.value.units, clash.id)}），单位名称必须全树唯一`)
+    return
+  }
   const parentId = form.value.parentId || null
   const code = form.value.code.trim()
   if (editingId.value) {
@@ -253,6 +274,61 @@ function submitUnit(): void {
     flash('已新增单位')
   }
   unitOpen.value = false
+}
+
+// ---- 重名单位：统计 + 人工合并 / 改名 ----
+const dupGroups = computed<UnitDuplicateGroup[]>(() =>
+  draft.value ? duplicateUnitGroups(draft.value.units) : []
+)
+
+/** 每组选中的保留单位，默认第一个 */
+const keepIds = ref<Record<string, string>>({})
+
+function keepOf(group: UnitDuplicateGroup): string {
+  const picked = keepIds.value[group.key]
+  return picked && group.nodes.some((n) => n.id === picked)
+    ? picked
+    : group.nodes[0].id
+}
+
+function setKeep(group: UnitDuplicateGroup, id: string): void {
+  keepIds.value = { ...keepIds.value, [group.key]: id }
+}
+
+function askMerge(group: UnitDuplicateGroup): void {
+  const d = draft.value
+  if (!d) return
+  const keepId = keepOf(group)
+  const keep = d.units.find((u) => u.id === keepId)
+  if (!keep) return
+  const others = group.nodes.filter((n) => n.id !== keepId)
+  // 保留单位在下级里时不能合并，否则会形成环
+  if (others.some((n) => isDescendant(n.id, keepId))) {
+    flash('不能让保留单位并入自己的下级，请先调整层级')
+    return
+  }
+  const moved = d.members.filter((m) => others.some((n) => n.id === m.unitId)).length
+  ask(
+    '合并重名单位',
+    `把「${group.name}」的 ${others.length} 个同名单位合并到「${unitPathOf(d.units, keepId)}」，其下 ${moved} 人与下级单位会一并转移。`,
+    () => {
+      const target = draft.value
+      if (!target) return
+      const parentIds = new Set<string | null>()
+      for (const node of others) {
+        parentIds.add(node.parentId)
+        for (const m of target.members) if (m.unitId === node.id) m.unitId = keepId
+        for (const u of target.units) if (u.parentId === node.id) u.parentId = keepId
+        target.units = target.units.filter((u) => u.id !== node.id)
+      }
+      parentIds.forEach((p) => normalize(p))
+      normalize(keep.parentId)
+      const next = { ...keepIds.value }
+      delete next[group.key]
+      keepIds.value = next
+      flash(`已合并 ${others.length} 个重名单位到「${keep.name}」`)
+    }
+  )
 }
 
 // ---- 删除 ----
@@ -317,6 +393,38 @@ function askDelete(u: UnitNode): void {
       <div class="stat"><span class="stat-k">最大层级</span><span class="stat-v">{{ maxDepth }}</span></div>
       <div class="stat"><span class="stat-k">已归属人员</span><span class="stat-v">{{ coveredMembers }}</span></div>
     </div>
+
+    <section v-if="dupGroups.length" class="card dup-card">
+      <div class="card-head">
+        <div class="card-title">重名单位待处理</div>
+        <span class="tag ink">{{ dupGroups.length }} 组</span>
+      </div>
+      <p class="dup-lead">
+        单位名称必须全树唯一。请为每组选择保留的单位，再把其余同名单位合并过去，或逐个改名。
+      </p>
+      <div v-for="g in dupGroups" :key="g.key" class="dup-group">
+        <div class="dup-group-head">
+          <span class="dup-name">{{ g.name }}</span>
+          <span class="dup-count">{{ g.nodes.length }} 个同名</span>
+        </div>
+        <div class="dup-nodes">
+          <label v-for="n in g.nodes" :key="n.id" class="dup-node">
+            <input
+              type="radio"
+              :name="'dup-' + g.key"
+              :checked="keepOf(g) === n.id"
+              @change="setKeep(g, n.id)"
+            />
+            <span class="dup-path">{{ unitPathOf(draft?.units ?? [], n.id) }}</span>
+            <span class="dup-meta">{{ memberCount(n.id) }} 人</span>
+            <button class="btn ghost xs" @click.prevent="openEdit(n)">改名</button>
+          </label>
+        </div>
+        <div class="dup-actions">
+          <button class="btn sm" @click="askMerge(g)">合并其余 {{ g.nodes.length - 1 }} 个到所选</button>
+        </div>
+      </div>
+    </section>
 
     <section class="card">
       <div class="card-head">
@@ -431,3 +539,44 @@ function askDelete(u: UnitNode): void {
 
   <div v-if="toast" class="toast">{{ toast }}</div>
 </template>
+
+<style scoped>
+.dup-card { border-color: var(--danger-line); }
+.dup-lead {
+  margin: 0 0 12px;
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.dup-group {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+.dup-group + .dup-group { margin-top: 10px; }
+.dup-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.dup-name { font-size: var(--fs-sm); color: var(--text-primary); }
+.dup-count {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.dup-nodes { display: flex; flex-direction: column; gap: 6px; }
+.dup-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+.dup-node:hover { background: var(--bg-hover); }
+.dup-node input { accent-color: var(--primary); }
+.dup-path { font-size: var(--fs-xs); color: var(--text-secondary); }
+.dup-meta { font-size: var(--fs-xs); color: var(--text-muted); }
+.dup-node .btn { margin-left: auto; }
+.dup-actions { margin-top: 8px; }
+</style>

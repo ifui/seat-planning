@@ -21,6 +21,11 @@ import {
   type ChartOption,
 } from "../ui/charts";
 import ImportDialog from "../components/roster/ImportDialog.vue";
+import {
+  planRankInputs,
+  planUnitInputs,
+  unitPathOf,
+} from "../engine/unitMatch";
 
 const emit = defineEmits<{
   (e: "open-ranks", rosterId: string): void;
@@ -71,8 +76,12 @@ function markDirty(): void {
   window.clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(async () => {
     if (seq !== autosaveSeq || !dirty.value || !draft.value) return;
-    await saveRoster(draft.value);
-    if (seq === autosaveSeq) dirty.value = false;
+    try {
+      await saveRoster(draft.value);
+      if (seq === autosaveSeq) dirty.value = false;
+    } catch (e: any) {
+      flash(e?.message || "保存失败");
+    }
   }, 900);
 }
 
@@ -80,8 +89,12 @@ async function flushAutosave(): Promise<void> {
   autosaveSeq++;
   window.clearTimeout(autosaveTimer);
   if (!dirty.value || !draft.value) return;
-  await saveRoster(draft.value);
-  dirty.value = false;
+  try {
+    await saveRoster(draft.value);
+    dirty.value = false;
+  } catch (e: any) {
+    flash(e?.message || "保存失败");
+  }
 }
 
 function onBeforeUnload(e: BeforeUnloadEvent): void {
@@ -198,9 +211,13 @@ async function save(): Promise<void> {
   if (!draft.value) return;
   autosaveSeq++;
   window.clearTimeout(autosaveTimer);
-  await saveRoster(draft.value);
-  dirty.value = false;
-  flash("名册已保存");
+  try {
+    await saveRoster(draft.value);
+    dirty.value = false;
+    flash("名册已保存");
+  } catch (e: any) {
+    flash(e?.message || "保存失败");
+  }
 }
 
 async function createPlan(): Promise<void> {
@@ -218,7 +235,12 @@ async function createPlan(): Promise<void> {
     createdAt: nowISO(),
     updatedAt: nowISO(),
   };
-  await saveRoster(plan);
+  try {
+    await saveRoster(plan);
+  } catch (e: any) {
+    flash(e?.message || "新建名册失败");
+    return;
+  }
   selectedId.value = plan.id;
   flash("已新建名册方案");
 }
@@ -1108,45 +1130,15 @@ const importResult = ref<{
 /** 新增职级的默认色轮：取统一预设里的非浅色项，避免职级色条过淡 */
 const RANK_PALETTE = COLOR_PRESETS.slice(1);
 
-const unitNames = computed(() => [
-  ...new Set((draft.value?.units ?? []).map((u) => u.name)),
-]);
-const rankNames = computed(() => sortedRanks.value.map((r) => r.name));
-
 function openImport(): void {
   if (!draft.value) return;
   importOpen.value = true;
 }
 
-function ensureUnit(name: string, rootId: string): UnitNode {
-  const d = draft.value!;
-  const hit = d.units.find((u) => u.name === name);
-  if (hit) return hit;
-  const order =
-    Math.max(
-      -1,
-      ...d.units.filter((u) => u.parentId === rootId).map((u) => u.order),
-    ) + 1;
-  const node: UnitNode = { id: uid("unit"), name, parentId: rootId, order };
-  d.units.push(node);
-  return node;
-}
-
-function ensureRank(name: string): RankDef {
-  const d = draft.value!;
-  const hit = d.ranks.find((r) => r.name === name);
-  if (hit) return hit;
-  const order = Math.max(-1, ...d.ranks.map((r) => r.order)) + 1;
-  const rank: RankDef = {
-    id: uid("rank"),
-    name,
-    order,
-    color: RANK_PALETTE[order % RANK_PALETTE.length],
-  };
-  d.ranks.push(rank);
-  return rank;
-}
-
+/**
+ * 文件导入：与 ImportDialog 预览共用 planUnitInputs / planRankInputs，
+ * 因此「预览显示将新建 N 个」与实际写入完全一致，不会出现静默归入根单位。
+ */
 async function handleImport(payload: {
   rows: {
     name: string;
@@ -1163,45 +1155,93 @@ async function handleImport(payload: {
   const rootId =
     d.units.find((u) => u.parentId === null)?.id ?? d.units[0]?.id ?? "";
   const fallbackUnit = payload.targetUnitId || rootId;
+
+  const unitPlan = planUnitInputs(
+    d.units,
+    payload.rows.map((r) => r.unit),
+    fallbackUnit,
+  );
+  const rankPlan = planRankInputs(
+    d.ranks,
+    payload.rows.map((r) => r.rank),
+  );
+  if (unitPlan.conflicts || rankPlan.conflicts) {
+    flash("单位或职级存在重名，已停止导入，请按预览提示修正");
+    return;
+  }
+
+  // 先落单位：父级可能引用同一批里的临时单位，按创建顺序换成真实 id
+  const unitIdMap = new Map<string, string>();
+  for (const nu of unitPlan.newUnits) {
+    const id = uid("unit");
+    unitIdMap.set(nu.tempId, id);
+    const parentId = nu.parentId
+      ? (unitIdMap.get(nu.parentId) ?? nu.parentId)
+      : null;
+    const order =
+      Math.max(
+        -1,
+        ...d.units.filter((u) => u.parentId === parentId).map((u) => u.order),
+      ) + 1;
+    d.units.push({ id, name: nu.name, parentId, order });
+  }
+
+  const rankIdMap = new Map<string, string>();
+  const rankStart = Math.max(-1, ...d.ranks.map((r) => r.order)) + 1;
+  rankPlan.newRanks.forEach((nr, i) => {
+    const id = uid("rank");
+    rankIdMap.set(nr.tempId, id);
+    d.ranks.push({
+      id,
+      name: nr.name,
+      order: rankStart + i,
+      color: RANK_PALETTE[(rankStart + i) % RANK_PALETTE.length],
+    });
+  });
+
   let fallbackRank = [...d.ranks].sort((a, b) => b.order - a.order)[0];
-  if (!fallbackRank) fallbackRank = ensureRank("未定级");
-  let newUnits = 0;
-  let newRanks = 0;
-  const unitsBefore = d.units.length;
-  const ranksBefore = d.ranks.length;
+  if (!fallbackRank) {
+    fallbackRank = {
+      id: uid("rank"),
+      name: "未定级",
+      order: 0,
+      color: RANK_PALETTE[0],
+    };
+    d.ranks.push(fallbackRank);
+  }
 
   /** 重名口径：姓名完全一致 + 归属同一单位（按 unitId 判定，避免同名不同单位被误杀） */
   const dupKey = (name: string, unitId: string): string =>
     `${name.trim()}\u0000${unitId}`;
-  const unitLabel = (id: string): string =>
-    d.units.find((u) => u.id === id)?.name ?? "未分单位";
   const seen = new Map<string, Member>();
   for (const m of d.members) seen.set(dupKey(m.name, m.unitId), m);
 
   const skipped: { name: string; unit: string }[] = [];
   let imported = 0;
-  for (const row of payload.rows) {
-    const unitName = row.unit.trim();
-    // 只复用已存在的同名单位；新单位在写入前不可能有历史成员，因此不需要查重
-    const knownUnit = unitName
-      ? d.units.find((u) => u.name === unitName)
-      : undefined;
-    const unitId = knownUnit?.id ?? (unitName ? "" : fallbackUnit);
+  payload.rows.forEach((row, i) => {
+    const resolved = unitPlan.items[i];
+    const unitId = resolved?.unitId
+      ? (unitIdMap.get(resolved.unitId) ?? resolved.unitId)
+      : fallbackUnit;
     if (
       !payload.allowDuplicate &&
       unitId &&
       seen.has(dupKey(row.name, unitId))
     ) {
-      skipped.push({ name: row.name, unit: unitName || unitLabel(unitId) });
-      continue;
+      skipped.push({
+        name: row.name,
+        unit: unitPathOf(d.units, unitId) || "未分单位",
+      });
+      return;
     }
-    const finalUnitId = unitId || ensureUnit(unitName, rootId).id;
-    let rankId = fallbackRank.id;
-    if (row.rank.trim()) rankId = ensureRank(row.rank.trim()).id;
+    const rankRes = rankPlan.items[i];
+    const rankId = rankRes?.rankId
+      ? (rankIdMap.get(rankRes.rankId) ?? rankRes.rankId)
+      : fallbackRank.id;
     const member: Member = {
       id: uid("m"),
       name: row.name,
-      unitId: finalUnitId,
+      unitId,
       rankId,
       duty: row.duty.trim() || undefined,
       aliases: [],
@@ -1209,17 +1249,25 @@ async function handleImport(payload: {
       status: "present",
     };
     d.members.push(member);
-    seen.set(dupKey(member.name, finalUnitId), member);
+    seen.set(dupKey(member.name, member.unitId), member);
     imported++;
-  }
-  newUnits = d.units.length - unitsBefore;
-  newRanks = d.ranks.length - ranksBefore;
+  });
+
   reindexMembers();
-  await saveRoster(d);
-  dirty.value = false;
+  try {
+    await saveRoster(d);
+    dirty.value = false;
+  } catch (e: any) {
+    flash(e?.message || "保存失败");
+    return;
+  }
   const extras = [
-    newUnits ? `新建单位 ${newUnits} 个` : "",
-    newRanks ? `新建职级 ${newRanks} 个` : "",
+    unitPlan.newUnits.length
+      ? `新建单位 ${unitPlan.newUnits.length} 个`
+      : "",
+    rankPlan.newRanks.length
+      ? `新建职级 ${rankPlan.newRanks.length} 个`
+      : "",
   ].filter(Boolean);
   importResult.value = { imported, skipped, extras };
   flash(
@@ -1714,8 +1762,8 @@ async function handleImport(payload: {
   <ImportDialog
     v-model="importOpen"
     :unit-options="unitOptions"
-    :unit-names="unitNames"
-    :rank-names="rankNames"
+    :units="draft?.units ?? []"
+    :ranks="sortedRanks"
     :default-unit-id="
       draft?.units.find((u) => u.parentId === null)?.id ??
       draft?.units[0]?.id ??

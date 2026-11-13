@@ -4,6 +4,7 @@
  */
 import type { Assignment, LayoutPackage, LayoutPreset, Member, Project, RosterPlan, Snapshot } from '../types'
 import { nowISO } from '../engine/sheet'
+import { duplicateRankGroups, duplicateUnitGroups } from '../engine/unitMatch'
 import type { ImportSummary, Tables } from './repository'
 
 /** 备份文件可接受的版本号 */
@@ -121,6 +122,24 @@ export function parseBackup(json: string): { tables: Tables; summary: ImportSumm
   const { rosters, layouts, projects, snapshots, presets } = tables
   if (!rosters.length && !layouts.length && !projects.length && !presets.length) {
     throw new Error('备份文件中没有可导入的数据')
+  }
+
+  // 备份导入同样要过唯一性校验：不静默改名或合并，直接拦下并列出重名清单
+  const dupes: string[] = []
+  const inspect = (r: RosterPlan, label: string): void => {
+    for (const g of duplicateUnitGroups(r.units ?? []))
+      dupes.push(`${label}单位「${g.name}」×${g.nodes.length}`)
+    for (const g of duplicateRankGroups(r.ranks ?? []))
+      dupes.push(`${label}职级「${g.name}」×${g.ranks.length}`)
+  }
+  for (const r of rosters) inspect(r, `名册「${r.name}」`)
+  for (const p of projects)
+    if (p.rosterSnapshot) inspect(p.rosterSnapshot, `项目「${p.name}」快照`)
+  if (dupes.length) {
+    const head = dupes.slice(0, 6).join('；')
+    throw new Error(
+      `备份中存在重名数据，已停止导入：${head}${dupes.length > 6 ? `；等共 ${dupes.length} 项` : ''}。请先在来源数据中改名或合并后再试。`
+    )
   }
 
   return {

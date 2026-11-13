@@ -48,6 +48,12 @@ import {
   type SeatRef,
 } from "../engine/sheet";
 import { chartFrame, renderSeatChart } from "../engine/render";
+import {
+  duplicateUnitGroups,
+  planRankInputs,
+  planUnitInputs,
+  unitPathOf,
+} from "../engine/unitMatch";
 import { preferences } from "../preferences";
 import { printImage, saveFile } from "../platform/files";
 import SeatBoardPane from "../components/project/SeatBoardPane.vue";
@@ -157,8 +163,12 @@ function markDirty(): void {
   window.clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(async () => {
     if (seq !== autosaveSeq || !dirty.value || !draft.value) return;
-    await saveProject(draft.value);
-    if (seq === autosaveSeq) dirty.value = false;
+    try {
+      await saveProject(draft.value);
+      if (seq === autosaveSeq) dirty.value = false;
+    } catch (e: any) {
+      flash(e?.message || "保存失败");
+    }
   }, 900);
 }
 
@@ -166,8 +176,12 @@ async function flushAutosave(): Promise<void> {
   autosaveSeq++;
   window.clearTimeout(autosaveTimer);
   if (!dirty.value || !draft.value) return;
-  await saveProject(draft.value);
-  dirty.value = false;
+  try {
+    await saveProject(draft.value);
+    dirty.value = false;
+  } catch (e: any) {
+    flash(e?.message || "保存失败");
+  }
 }
 
 function onBeforeUnload(e: BeforeUnloadEvent): void {
@@ -1686,9 +1700,13 @@ async function save(): Promise<void> {
   if (!draft.value) return;
   autosaveSeq++;
   window.clearTimeout(autosaveTimer);
-  await saveProject(draft.value);
-  dirty.value = false;
-  flash("项目已保存");
+  try {
+    await saveProject(draft.value);
+    dirty.value = false;
+    flash("项目已保存");
+  } catch (e: any) {
+    flash(e?.message || "保存失败");
+  }
 }
 
 // ---- 新建 / 重命名 / 删除 ----
@@ -1725,6 +1743,11 @@ async function createProject(): Promise<void> {
     flash("所选名册不存在");
     return;
   }
+  const dup = duplicateHint(sourceRoster);
+  if (dup) {
+    flash(dup);
+    return;
+  }
   const p: Project = {
     id: uid("proj"),
     name,
@@ -1741,7 +1764,12 @@ async function createProject(): Promise<void> {
     createdAt: nowISO(),
     updatedAt: nowISO(),
   };
-  await saveProject(p);
+  try {
+    await saveProject(p);
+  } catch (e: any) {
+    flash(e?.message || "项目创建失败");
+    return;
+  }
   createOpen.value = false;
   selectedId.value = p.id;
   flash("项目已创建");
@@ -1752,6 +1780,11 @@ function changeRosterSource(id: string): void {
   if (!draft.value || !id || id === draft.value.rosterPlanId) return;
   const live = state.rosters.find((r) => r.id === id);
   if (!live) return;
+  const dup = duplicateHint(live);
+  if (dup) {
+    flash(dup);
+    return;
+  }
   draft.value.rosterPlanId = id;
   draft.value.rosterSnapshot = clone(live);
   draft.value.assignments = [];
@@ -2063,21 +2096,30 @@ const addUnitOptions = computed(() => {
   ];
 });
 
-const snapUnitOptions = computed(() =>
-  (roster.value?.units ?? []).map((u) => ({ value: u.id, label: u.name })),
-);
-const snapUnitNames = computed(() =>
-  (roster.value?.units ?? []).map((u) => u.name),
-);
-const snapRankNames = computed(() =>
-  (roster.value?.ranks ?? []).map((r) => r.name),
-);
+const snapUnitOptions = computed(() => {
+  const units = roster.value?.units ?? [];
+  return units.map((u) => ({
+    value: u.id,
+    label: unitPathOf(units, u.id),
+  }));
+});
+const snapUnits = computed(() => roster.value?.units ?? []);
+const snapRanks = computed(() => roster.value?.ranks ?? []);
 const snapRootUnitId = computed(
   () =>
     roster.value?.units.find((u) => u.parentId === null)?.id ??
     roster.value?.units[0]?.id ??
     "",
 );
+
+/** 重名清单文案：项目侧复制/导入前统一拦截，不静默改名或合并 */
+function duplicateHint(r: RosterPlan): string | null {
+  const groups = duplicateUnitGroups(r.units ?? []);
+  if (!groups.length) return null;
+  return `名册中存在重名单位：${groups
+    .map((g) => `「${g.name}」×${g.nodes.length}`)
+    .join("、")}，请先到单位编制序列改名或合并`;
+}
 
 function openAdd(): void {
   addText.value = "";
@@ -2161,6 +2203,10 @@ const importOpen = ref(false);
 /** 导入结果：跳过的重名名单（默认拒绝），避免静默丢弃 */
 const importResult = ref<{ imported: number; skipped: { name: string; unit: string }[] } | null>(null);
 
+/**
+ * 项目内导入：与名册页共用 planUnitInputs / planRankInputs，
+ * 未知单位按路径前缀新建（不再静默归入根单位），预览与写入结果一致。
+ */
 function handleProjectImport(payload: {
   rows: {
     name: string;
@@ -2174,46 +2220,79 @@ function handleProjectImport(payload: {
 }): void {
   const snap = draft.value?.rosterSnapshot;
   if (!draft.value || !snap || !payload.rows.length) return;
+  if (!snap.units || !snap.ranks) return;
+
   const rootId =
     snap.units.find((u) => u.parentId === null)?.id ?? snap.units[0]?.id ?? "";
+  const fallbackUnit = payload.targetUnitId || rootId;
+
+  const unitPlan = planUnitInputs(
+    snap.units,
+    payload.rows.map((r) => r.unit),
+    fallbackUnit,
+  );
+  const rankPlan = planRankInputs(
+    snap.ranks,
+    payload.rows.map((r) => r.rank),
+  );
+  if (unitPlan.conflicts || rankPlan.conflicts) {
+    flash("单位或职级存在重名，已停止导入，请按预览提示修正");
+    return;
+  }
+
+  const unitIdMap = new Map<string, string>();
+  for (const nu of unitPlan.newUnits) {
+    const id = uid("unit");
+    unitIdMap.set(nu.tempId, id);
+    const parentId = nu.parentId
+      ? (unitIdMap.get(nu.parentId) ?? nu.parentId)
+      : null;
+    const order =
+      Math.max(
+        -1,
+        ...snap.units
+          .filter((u) => u.parentId === parentId)
+          .map((u) => u.order),
+      ) + 1;
+    snap.units.push({ id, name: nu.name, parentId, order });
+  }
+
+  const rankIdMap = new Map<string, string>();
+  const rankStart = Math.max(-1, ...snap.ranks.map((r) => r.order)) + 1;
+  rankPlan.newRanks.forEach((nr, i) => {
+    const id = uid("rank");
+    rankIdMap.set(nr.tempId, id);
+    snap.ranks.push({
+      id,
+      name: nr.name,
+      order: rankStart + i,
+      color: COLOR_PRESETS.slice(1)[(rankStart + i) % (COLOR_PRESETS.length - 1)],
+    });
+  });
+
   const fallbackRank = [...snap.ranks].sort((a, b) => b.order - a.order)[0];
   const wasEmpty = !draft.value.participantIds.length;
   const createdIds: string[] = [];
   const skipped: { name: string; unit: string }[] = [];
   const dupKey = (name: string, unitId: string) => `${name.trim()}\u0000${unitId}`;
   const seen = new Set(snap.members.map((m) => dupKey(m.name, m.unitId)));
-  let newRanks = 0;
-  for (const row of payload.rows) {
-    const unitName = row.unit.trim();
-    const unitId =
-      (unitName ? snap.units.find((u) => u.name === unitName)?.id : "") ||
-      payload.targetUnitId ||
-      rootId;
+
+  payload.rows.forEach((row, i) => {
+    const resolved = unitPlan.items[i];
+    const unitId = resolved?.unitId
+      ? (unitIdMap.get(resolved.unitId) ?? resolved.unitId)
+      : fallbackUnit;
     if (!payload.allowDuplicate && seen.has(dupKey(row.name, unitId))) {
       skipped.push({
         name: row.name,
-        unit: snap.units.find((u) => u.id === unitId)?.name ?? "未分单位",
+        unit: unitPathOf(snap.units, unitId) || "未分单位",
       });
-      continue;
+      return;
     }
-    let rankId = fallbackRank?.id ?? "";
-    const rankName = row.rank.trim();
-    if (rankName) {
-      const exact = snap.ranks.find((r) => r.name === rankName);
-      if (exact) rankId = exact.id;
-      else {
-        const order = Math.max(0, ...snap.ranks.map((r) => r.order)) + 1;
-        const created = {
-          id: uid("rank"),
-          name: rankName,
-          order,
-          color: "#8a979d",
-        };
-        snap.ranks.push(created);
-        rankId = created.id;
-        newRanks++;
-      }
-    }
+    const rankRes = rankPlan.items[i];
+    const rankId = rankRes?.rankId
+      ? (rankIdMap.get(rankRes.rankId) ?? rankRes.rankId)
+      : (fallbackRank?.id ?? "");
     const member: Member = {
       id: uid("m"),
       name: row.name,
@@ -2228,14 +2307,19 @@ function handleProjectImport(payload: {
     snap.members.push(member);
     seen.add(dupKey(member.name, member.unitId));
     createdIds.push(member.id);
-  }
+  });
+
   draft.value.participantIds = wasEmpty
     ? snap.members.map((m) => m.id)
     : [...new Set([...draft.value.participantIds, ...createdIds])];
   importOpen.value = false;
   importResult.value = { imported: createdIds.length, skipped };
+  const extras = [
+    unitPlan.newUnits.length ? `新建单位 ${unitPlan.newUnits.length} 个` : "",
+    rankPlan.newRanks.length ? `新建职级 ${rankPlan.newRanks.length} 个` : "",
+  ].filter(Boolean);
   flash(
-    `已导入 ${createdIds.length} 人${skipped.length ? `，跳过重名 ${skipped.length} 人` : ""}${newRanks ? `，新建职级 ${newRanks} 个` : ""}`,
+    `已导入 ${createdIds.length} 人${skipped.length ? `，跳过重名 ${skipped.length} 人` : ""}${extras.length ? `，${extras.join("、")}` : ""}`,
   );
 }
 
@@ -2449,6 +2533,13 @@ async function applyRosterDiff(): Promise<void> {
   const snap = draft.value?.rosterSnapshot;
   const live = liveRoster.value;
   if (!draft.value || !snap || !live) return;
+  // 应用差异会把名册的单位/职级定义复制进快照，先过唯一性校验
+  const dup = duplicateHint(live);
+  if (dup) {
+    diffOpen.value = false;
+    flash(dup);
+    return;
+  }
   const picked = rosterDiff.value.filter((it) => diffPick.value[it.key]);
   if (!picked.length) {
     diffOpen.value = false;
@@ -3875,8 +3966,8 @@ async function restoreSnap(id: string): Promise<void> {
   <ImportDialog
     v-model="importOpen"
     :unit-options="snapUnitOptions"
-    :unit-names="snapUnitNames"
-    :rank-names="snapRankNames"
+    :units="snapUnits"
+    :ranks="snapRanks"
     :default-unit-id="snapRootUnitId"
     @import="handleProjectImport"
   />

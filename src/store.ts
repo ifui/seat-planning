@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import type { LayoutPackage, LayoutPreset, Project, RosterPlan, Snapshot } from './types'
 import { buildSeed, repository, type StorageMode } from './data'
+import { duplicateMessage, introducedDuplicates } from './engine/unitMatch'
 
 export const state = reactive({
   ready: false,
@@ -40,7 +41,19 @@ export async function loadAll(seedIfEmpty = true): Promise<void> {
   state.ready = true
 }
 
+/**
+ * 写入前的中央唯一性校验：
+ * 只有相对上一版「新引入」的重名才拦截 —— 历史遗留重名不静默改名或合并，
+ * 交给单位/职级页的重名清单由用户处理。
+ */
+function assertNoNewDuplicates(next: RosterPlan, prev: RosterPlan | undefined): void {
+  const units = introducedDuplicates(next.units, prev?.units ?? [])
+  const ranks = introducedDuplicates(next.ranks, prev?.ranks ?? [])
+  if (units.length || ranks.length) throw new Error(duplicateMessage(units, ranks))
+}
+
 export async function saveRoster(r: RosterPlan): Promise<void> {
+  assertNoNewDuplicates(r, state.rosters.find((x) => x.id === r.id))
   r.updatedAt = new Date().toISOString()
   await repository.saveRoster(r)
   await loadAll()
@@ -53,6 +66,9 @@ export async function saveLayout(l: LayoutPackage): Promise<void> {
 }
 
 export async function saveProject(p: Project): Promise<void> {
+  const prev = state.projects.find((x) => x.id === p.id)
+  if (p.rosterSnapshot)
+    assertNoNewDuplicates(p.rosterSnapshot, prev?.rosterSnapshot)
   p.updatedAt = new Date().toISOString()
   await repository.saveProject(p)
   await loadAll()

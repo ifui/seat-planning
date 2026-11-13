@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import type { RankDef, UnitNode } from '../../types'
 import type { FieldMap, ParsedPerson, RawTable } from '../../engine/rosterImport'
 import { buildRows, readRosterFile, suggestMapping } from '../../engine/rosterImport'
+import {
+  planRankInputs,
+  planUnitInputs,
+  unitPathOf,
+  type UnitResolution
+} from '../../engine/unitMatch'
 import { UiButton, UiCheckbox, UiIcon, UiModal, UiSelect } from '../../ui'
 
 interface EditRow extends ParsedPerson {
@@ -12,8 +19,10 @@ const props = withDefaults(
   defineProps<{
     modelValue: boolean
     unitOptions: { value: string; label: string }[]
-    unitNames: string[]
-    rankNames: string[]
+    /** 当前名册（或项目快照）的单位树，用于逐行解析预览 */
+    units: UnitNode[]
+    /** 当前名册（或项目快照）的职级，用于逐行解析预览 */
+    ranks: RankDef[]
     defaultUnitId?: string
   }>(),
   { defaultUnitId: '' }
@@ -123,14 +132,80 @@ const pending = computed(() => rows.value.filter((r) => !r.ignore && r.name.trim
 const missing = computed(() => rows.value.filter((r) => !r.ignore && !r.name.trim()).length)
 const ignored = computed(() => rows.value.filter((r) => r.ignore).length)
 const issueRows = computed(() => rows.value.filter((r) => !r.ignore && r.name.trim() && r.issues.length).length)
-const newUnits = computed(() => {
-  const known = new Set(props.unitNames)
-  return [...new Set(pending.value.map((r) => r.unit.trim()).filter((u) => u && !known.has(u)))]
+
+/**
+ * 逐行解析预览与实际导入共用同一套 plan：
+ * 预览显示什么（命中哪条路径 / 将新建在哪一级下 / 冲突），导入就按什么执行。
+ */
+const unitPlan = computed(() =>
+  planUnitInputs(
+    props.units,
+    pending.value.map((r) => r.unit),
+    targetUnitId.value || props.defaultUnitId || ''
+  )
+)
+const rankPlan = computed(() =>
+  planRankInputs(props.ranks, pending.value.map((r) => r.rank))
+)
+/** 行对象 → 解析结果：被忽略的行不参与解析，因此按 pending 顺序建映射 */
+const unitOfRow = computed(() => {
+  const map = new Map<EditRow, UnitResolution>()
+  pending.value.forEach((r, i) => {
+    const item = unitPlan.value.items[i]
+    if (item) map.set(r, item)
+  })
+  return map
 })
-const newRanks = computed(() => {
-  const known = new Set(props.rankNames)
-  return [...new Set(pending.value.map((r) => r.rank.trim()).filter((u) => u && !known.has(u)))]
+const rankOfRow = computed(() => {
+  const map = new Map<EditRow, ReturnType<typeof planRankInputs>['items'][number]>()
+  pending.value.forEach((r, i) => {
+    const item = rankPlan.value.items[i]
+    if (item) map.set(r, item)
+  })
+  return map
 })
+const newUnits = computed(() => unitPlan.value.newUnits)
+const newRanks = computed(() => rankPlan.value.newRanks)
+const conflictCount = computed(() => unitPlan.value.conflicts + rankPlan.value.conflicts)
+const targetPath = computed(() => unitPathOf(props.units, targetUnitId.value))
+
+/** 单位输入建议：给出全路径，便于直接按路径命中 */
+const unitPathOptions = computed(() => {
+  const paths = props.units.map((u) => unitPathOf(props.units, u.id))
+  return [...new Set(paths)].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+const rankNameOptions = computed(() => [
+  ...new Set(props.ranks.map((r) => r.name))
+])
+
+function unitHint(r: EditRow): string {
+  const it = unitOfRow.value.get(r)
+  if (!it) return ''
+  if (it.kind === 'empty')
+    return targetPath.value ? `空 → 归入 ${targetPath.value}` : '空 → 未指定归入单位'
+  if (it.kind === 'existing')
+    return `${it.via === 'path' ? '命中路径' : '命中名称'}：${it.path}`
+  if (it.kind === 'new')
+    return `新建 → ${it.parentPath ? `挂在 ${it.parentPath} 下` : '根级'}`
+  return `冲突：已有 ${it.candidates?.length ?? 0} 个同名单位`
+}
+
+function unitTone(r: EditRow): string {
+  const it = unitOfRow.value.get(r)
+  if (!it) return 'muted'
+  if (it.kind === 'empty') return 'muted'
+  if (it.kind === 'existing') return 'ok'
+  if (it.kind === 'new') return 'new'
+  return 'conflict'
+}
+
+function rankHint(r: EditRow): string {
+  const it = rankOfRow.value.get(r)
+  if (!it) return ''
+  if (it.kind === 'new') return `将新建职级「${it.name}」`
+  if (it.kind === 'conflict') return `职级「${it.name}」存在重名，请先处理`
+  return ''
+}
 
 function rowStatus(r: EditRow): 'ignored' | 'error' | 'warn' | 'ok' {
   if (r.ignore) return 'ignored'
@@ -149,7 +224,7 @@ function toggleRow(r: EditRow): void {
 }
 
 function submit(): void {
-  if (!pending.value.length) return
+  if (!pending.value.length || conflictCount.value) return
   emit('import', {
     rows: pending.value.map((r) => ({
       name: r.name.trim(),
@@ -171,7 +246,7 @@ function submit(): void {
     title="批量导入人员"
     description="Excel / Word / CSV 均可；识别错误的列可在下方改选。"
     icon="import"
-    width="940px"
+    width="1080px"
   >
     <div v-if="!table" class="imp-start">
       <button
@@ -200,6 +275,9 @@ function submit(): void {
           <li>旧版 .doc 请先另存为 .docx；CSV 支持 UTF-8 与 GBK 编码。</li>
           <li>「姓名」列会自动识别人名与括号内的单位、职级、电话。</li>
           <li>列名不含「姓名」时，会按内容特征自动挑选最像人名的列。</li>
+          <li>单位支持全路径，用 / \ &gt; ＞ 分隔，如「局机关 / 办公室」；写短名也行。</li>
+          <li>单位名称全树唯一：填了不存在的路径时按路径前缀新建，未填的归入指定单位。</li>
+          <li>导入前会逐行显示解析结果，重名冲突会拦下并说明原因。</li>
         </ul>
       </div>
     </div>
@@ -250,20 +328,22 @@ function submit(): void {
       <div class="imp-table-wrap">
         <table class="imp-table">
           <colgroup>
-            <col style="width: 46px" />
-            <col style="width: 116px" />
-            <col />
-            <col />
-            <col />
-            <col />
-            <col style="width: 78px" />
-            <col style="width: 58px" />
+            <col style="width: 42px" />
+            <col style="width: 104px" />
+            <col style="width: 168px" />
+            <col style="width: 208px" />
+            <col style="width: 104px" />
+            <col style="width: 92px" />
+            <col style="width: 92px" />
+            <col style="width: 66px" />
+            <col style="width: 56px" />
           </colgroup>
           <thead>
             <tr>
               <th>行</th>
               <th>姓名</th>
               <th>单位</th>
+              <th>单位解析</th>
               <th>职级</th>
               <th>职务</th>
               <th>备注</th>
@@ -276,7 +356,22 @@ function submit(): void {
               <td class="imp-line">{{ r.line }}</td>
               <td><input v-model="r.name" class="insp-input imp-cell-input" placeholder="姓名" /></td>
               <td><input v-model="r.unit" class="insp-input imp-cell-input" list="imp-units" placeholder="未填写" /></td>
-              <td><input v-model="r.rank" class="insp-input imp-cell-input" list="imp-ranks" placeholder="未填写" /></td>
+              <td>
+                <span
+                  class="imp-res"
+                  :class="unitTone(r)"
+                  :title="unitHint(r)"
+                >{{ r.ignore ? '—' : unitHint(r) || '—' }}</span>
+              </td>
+              <td>
+                <input
+                  v-model="r.rank"
+                  class="insp-input imp-cell-input"
+                  list="imp-ranks"
+                  placeholder="未填写"
+                  :title="rankHint(r)"
+                />
+              </td>
               <td><input v-model="r.duty" class="insp-input imp-cell-input" placeholder="如主任" /></td>
               <td><input v-model="r.note" class="insp-input imp-cell-input" placeholder="—" /></td>
               <td>
@@ -293,7 +388,7 @@ function submit(): void {
               </td>
             </tr>
             <tr v-if="!rows.length">
-              <td colspan="8" class="imp-empty">没有解析出人员行，请检查「姓名」列是否选对。</td>
+              <td colspan="9" class="imp-empty">没有解析出人员行，请检查「姓名」列是否选对。</td>
             </tr>
           </tbody>
         </table>
@@ -316,19 +411,34 @@ function submit(): void {
         <span v-if="issueRows" class="warn">· {{ issueRows }} 行有提示</span>
         <span v-if="newUnits.length" class="hint">· 将新建单位 {{ newUnits.length }} 个</span>
         <span v-if="newRanks.length" class="hint">· 将新建职级 {{ newRanks.length }} 个</span>
+        <span v-if="conflictCount" class="warn">· {{ conflictCount }} 行单位/职级重名，需先处理</span>
+      </div>
+
+      <div v-if="conflictCount" class="imp-alert error" style="margin-top: 8px">
+        存在重名冲突：单位名称必须全树唯一。请按「单位解析」列提示修改对应行，或先到单位编制序列里改名/合并同名单位。
+      </div>
+
+      <div v-if="newUnits.length || newRanks.length" class="imp-summary" style="margin-top: 4px">
+        <span v-if="newUnits.length" class="hint">
+          新建单位：
+          {{ newUnits.map((u) => `${u.name}${u.parentPath ? `（挂在 ${u.parentPath} 下）` : '（根级）'}`).join('、') }}
+        </span>
+        <span v-if="newRanks.length" class="hint">
+          新建职级：{{ newRanks.map((r) => r.name).join('、') }}
+        </span>
       </div>
 
       <datalist id="imp-units">
-        <option v-for="u in unitNames" :key="u" :value="u" />
+        <option v-for="u in unitPathOptions" :key="u" :value="u" />
       </datalist>
       <datalist id="imp-ranks">
-        <option v-for="u in rankNames" :key="u" :value="u" />
+        <option v-for="u in rankNameOptions" :key="u" :value="u" />
       </datalist>
     </template>
 
     <template #footer>
       <UiButton variant="ghost" @click="open = false">取消</UiButton>
-      <UiButton variant="primary" :disabled="!pending.length" @click="submit">
+      <UiButton variant="primary" :disabled="!pending.length || !!conflictCount" @click="submit">
         导入 {{ pending.length }} 人
       </UiButton>
     </template>
@@ -374,6 +484,15 @@ function submit(): void {
 .imp-table tr.ignored td { opacity: .45; }
 .imp-table tr.ignored .btn { opacity: 1; }
 .imp-line { color: var(--text-disabled); font-variant-numeric: tabular-nums; text-align: center; }
+.imp-res {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; line-height: 1.5;
+  padding: 0 2px;
+}
+.imp-res.muted { color: var(--text-disabled); }
+.imp-res.ok { color: var(--text-muted); }
+.imp-res.new { color: var(--primary); }
+.imp-res.conflict { color: var(--danger); }
 .imp-cell-input {
   height: 26px; padding: 0 6px; border-color: transparent; background: transparent;
   font-size: var(--fs-xs); border-radius: var(--radius-xs);

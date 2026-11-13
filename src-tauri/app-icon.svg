@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <!-- 与应用内 .brand-mark 同一套造型：圆角方块 + 白色坐标轴 + 右上数据点 -->
-  <rect width="1024" height="1024" rx="240" ry="240" fill="#4a7c7b"/>
-  <path d="M256 256 V736 H736" fill="none" stroke="#ffffff" stroke-width="48"
+  <rect width="1024" height="1024" rx="224" ry="224" fill="#4a7c7b"/>
+  <path d="M205 205 V819 H819" fill="none" stroke="#ffffff" stroke-width="66"
         stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="704" cy="352" r="64" fill="#ffffff"/>
+  <circle cx="785" cy="316" r="82" fill="#ffffff"/>
 </svg>

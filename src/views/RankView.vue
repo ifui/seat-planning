@@ -3,6 +3,12 @@ import { computed, ref, watch } from 'vue'
 import type { RankDef, RosterPlan } from '../types'
 import { saveRoster, state } from '../store'
 import { uid } from '../engine/sheet'
+import {
+  duplicateRankGroups,
+  nameKey,
+  normalizeName,
+  type RankDuplicateGroup,
+} from '../engine/unitMatch'
 import { UiButton, UiColorPicker, UiIconButton, UiInput, UiModal, UiSelect } from '../ui'
 
 const props = withDefaults(defineProps<{ initialRosterId?: string }>(), { initialRosterId: '' })
@@ -58,20 +64,25 @@ function memberCount(rankId: string): number {
   return draft.value?.members.filter((m) => m.rankId === rankId).length ?? 0
 }
 
-async function persist(): Promise<void> {
-  if (!draft.value) return
-  await saveRoster(draft.value)
-  dirty.value = false
+async function persist(): Promise<boolean> {
+  if (!draft.value) return true
+  try {
+    await saveRoster(draft.value)
+    dirty.value = false
+    return true
+  } catch (e: any) {
+    flash(e?.message || '保存失败')
+    return false
+  }
 }
 
 async function save(): Promise<void> {
   if (!draft.value) return
-  await persist()
-  flash('职级序列已保存')
+  if (await persist()) flash('职级序列已保存')
 }
 
 async function back(): Promise<void> {
-  if (dirty.value) await persist()
+  if (dirty.value && !(await persist())) return
   emit('back')
 }
 
@@ -141,8 +152,17 @@ function openEdit(r: RankDef): void {
 
 function submitRank(): void {
   if (!draft.value) return
-  const name = form.value.name.trim()
+  const name = normalizeName(form.value.name)
   if (!name) { flash('请填写职级名称'); return }
+  // 职级名称同名校验口径与单位一致：归一化后全表唯一
+  const key = nameKey(name)
+  const clash = draft.value.ranks.find(
+    (r) => r.id !== editingId.value && nameKey(r.name) === key
+  )
+  if (clash) {
+    flash(`「${name}」与已有职级重名，职级名称在同名册内必须唯一`)
+    return
+  }
   const shortName = form.value.shortName.trim()
   if (editingId.value) {
     const r = draft.value.ranks.find((x) => x.id === editingId.value)
@@ -159,6 +179,48 @@ function submitRank(): void {
     flash('已新增职级，位于序列末位')
   }
   rankOpen.value = false
+}
+
+// ---- 重名职级：统计 + 人工合并 / 改名 ----
+const dupGroups = computed<RankDuplicateGroup[]>(() =>
+  draft.value ? duplicateRankGroups(draft.value.ranks) : []
+)
+
+const keepIds = ref<Record<string, string>>({})
+
+function keepOf(group: RankDuplicateGroup): string {
+  const picked = keepIds.value[group.key]
+  return picked && group.ranks.some((r) => r.id === picked) ? picked : group.ranks[0].id
+}
+
+function setKeep(group: RankDuplicateGroup, id: string): void {
+  keepIds.value = { ...keepIds.value, [group.key]: id }
+}
+
+function askMerge(group: RankDuplicateGroup): void {
+  const d = draft.value
+  if (!d) return
+  const keepId = keepOf(group)
+  const keep = d.ranks.find((r) => r.id === keepId)
+  if (!keep) return
+  const others = group.ranks.filter((r) => r.id !== keepId)
+  const moved = d.members.filter((m) => others.some((r) => r.id === m.rankId)).length
+  ask(
+    '合并重名职级',
+    `把「${group.name}」的 ${others.length} 个同名职级合并到「${keep.name}」，其下 ${moved} 人会一并转移。`,
+    () => {
+      const target = draft.value
+      if (!target) return
+      const othersIds = new Set(others.map((r) => r.id))
+      for (const m of target.members) if (othersIds.has(m.rankId)) m.rankId = keepId
+      target.ranks = target.ranks.filter((r) => !othersIds.has(r.id))
+      sortedRanks.value.forEach((r, i) => { r.order = i })
+      const next = { ...keepIds.value }
+      delete next[group.key]
+      keepIds.value = next
+      flash(`已合并 ${others.length} 个重名职级到「${keep.name}」`)
+    }
+  )
 }
 
 // ---- 删除 ----
@@ -222,6 +284,39 @@ function askDelete(r: RankDef): void {
       <div class="stat"><span class="stat-k">已使用</span><span class="stat-v">{{ usedCount }}</span></div>
       <div class="stat"><span class="stat-k">覆盖人数</span><span class="stat-v">{{ draft.members.length }}</span></div>
     </div>
+
+    <section v-if="dupGroups.length" class="card dup-card">
+      <div class="card-head">
+        <div class="card-title">重名职级待处理</div>
+        <span class="tag ink">{{ dupGroups.length }} 组</span>
+      </div>
+      <p class="dup-lead">
+        职级名称在同一名册内必须唯一。请选择保留的职级，把其余同名职级合并过去，或逐个改名。
+      </p>
+      <div v-for="g in dupGroups" :key="g.key" class="dup-group">
+        <div class="dup-group-head">
+          <span class="dup-name">{{ g.name }}</span>
+          <span class="dup-count">{{ g.ranks.length }} 个同名</span>
+        </div>
+        <div class="dup-nodes">
+          <label v-for="r in g.ranks" :key="r.id" class="dup-node">
+            <input
+              type="radio"
+              :name="'dup-rank-' + g.key"
+              :checked="keepOf(g) === r.id"
+              @change="setKeep(g, r.id)"
+            />
+            <span class="seq-swatch" :style="{ background: r.color }" />
+            <span class="dup-path">{{ r.name }}</span>
+            <span class="dup-meta">{{ memberCount(r.id) }} 人</span>
+            <button class="btn ghost xs" @click.prevent="openEdit(r)">改名</button>
+          </label>
+        </div>
+        <div class="dup-actions">
+          <button class="btn sm" @click="askMerge(g)">合并其余 {{ g.ranks.length - 1 }} 个到所选</button>
+        </div>
+      </div>
+    </section>
 
     <section class="card">
       <div class="card-head">
@@ -309,3 +404,44 @@ function askDelete(r: RankDef): void {
 
   <div v-if="toast" class="toast">{{ toast }}</div>
 </template>
+
+<style scoped>
+.dup-card { border-color: var(--danger-line); }
+.dup-lead {
+  margin: 0 0 12px;
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.dup-group {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+.dup-group + .dup-group { margin-top: 10px; }
+.dup-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.dup-name { font-size: var(--fs-sm); color: var(--text-primary); }
+.dup-count {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.dup-nodes { display: flex; flex-direction: column; gap: 6px; }
+.dup-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+.dup-node:hover { background: var(--bg-hover); }
+.dup-node input { accent-color: var(--primary); }
+.dup-path { font-size: var(--fs-xs); color: var(--text-secondary); }
+.dup-meta { font-size: var(--fs-xs); color: var(--text-muted); }
+.dup-node .btn { margin-left: auto; }
+.dup-actions { margin-top: 8px; }
+</style>

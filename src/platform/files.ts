@@ -7,18 +7,20 @@
  */
 import { isTauri } from './env'
 
-export type FileKind = 'png' | 'xlsx' | 'json'
+export type FileKind = 'png' | 'xlsx' | 'json' | 'sp'
 
 const MIME: Record<FileKind, string> = {
   png: 'image/png',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  json: 'application/json'
+  json: 'application/json',
+  sp: 'application/octet-stream'
 }
 
 const FILTERS: Record<FileKind, { name: string; extensions: string[] }> = {
   png: { name: 'PNG 图片', extensions: ['png'] },
   xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] },
-  json: { name: 'JSON 文件', extensions: ['json'] }
+  json: { name: 'JSON 文件', extensions: ['json'] },
+  sp: { name: '座位编排备份', extensions: ['sp'] }
 }
 
 export interface SaveResult {

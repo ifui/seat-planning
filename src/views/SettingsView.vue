@@ -4,8 +4,9 @@
  * 页面本身只做导航与说明，所有操作在弹框内完成；
  * 视觉沿用 tokens 与 .insp-* 的规格，不引入新的颜色与字号档位。
  */
-import { computed, onMounted, ref } from "vue";
+import { onMounted, ref } from "vue";
 import { repository, type StorageUsage } from "../data";
+import { packBackup, unpackBackup } from "../data/backupFile";
 import { loadAll } from "../store";
 import { saveFile } from "../platform/files";
 import { UiIcon, UiModal } from "../ui";
@@ -53,14 +54,12 @@ async function backupAll(): Promise<void> {
   try {
     const json = await repository.exportAll();
     const res = await saveFile(
-      `seat-planning-backup-${new Date().toISOString().slice(0, 10)}.json`,
-      json,
-      "json",
+      `seat-planning-backup-${new Date().toISOString().slice(0, 10)}.sp`,
+      await packBackup(json),
+      "sp",
     );
     backupNoticeWarn.value = false;
-    backupNotice.value = res.saved
-      ? "已导出全量备份，请妥善保存该文件。"
-      : "已取消导出。";
+    backupNotice.value = res.saved ? "已导出备份。" : "已取消导出。";
   } catch {
     backupNoticeWarn.value = true;
     backupNotice.value = "导出失败，请重试。";
@@ -74,9 +73,12 @@ async function importBackup(e: Event): Promise<void> {
   if (!file) return;
   busy.value = true;
   try {
-    const summary = await repository.importAll(await file.text());
+    const summary = await repository.importAll(
+      await unpackBackup(await file.arrayBuffer()),
+    );
     await loadAll(false);
     await refreshUsage();
+    pageNotice.value = "";
     const total =
       summary.rosters +
       summary.layouts +
@@ -84,7 +86,7 @@ async function importBackup(e: Event): Promise<void> {
       summary.presets +
       summary.snapshots;
     backupNoticeWarn.value = false;
-    backupNotice.value = `已导入 ${total} 条数据${summary.warnings.length ? `（${summary.warnings.join("；")}）` : ""}。`;
+    backupNotice.value = `已导入 ${total} 条数据。`;
   } catch (err) {
     backupNoticeWarn.value = true;
     backupNotice.value =
@@ -114,7 +116,7 @@ async function clearAll(): Promise<void> {
     await loadAll(false);
     await refreshUsage();
     clearOpen.value = false;
-    pageNotice.value = "已清空全部本机数据，可导入备份恢复。";
+    pageNotice.value = "已清空全部本机数据。";
   } finally {
     busy.value = false;
   }
@@ -126,7 +128,7 @@ async function clearAll(): Promise<void> {
     <div class="page-head-main">
       <div class="page-eyebrow">系统</div>
       <h1 class="page-title">设置中心</h1>
-      <p class="page-desc">维护保存在本机上的名册、会场与排座数据。</p>
+      <p class="page-desc">备份、快照与数据管理。</p>
     </div>
   </header>
 
@@ -151,16 +153,7 @@ async function clearAll(): Promise<void> {
         </div>
       </div>
       <p class="set-copy">便捷、方便的座位编排工具。</p>
-      <ul class="set-notes">
-        <li>
-          <UiIcon name="import" :size="12" />
-          <span>导入覆盖，同数据会被替换。</span>
-        </li>
-        <li>
-          <UiIcon name="info" :size="12" />
-          <span>清空不可撤销，建议先导出一份备份。</span>
-        </li>
-      </ul>
+      <p class="set-foot">数据仅保存在本机。</p>
     </aside>
 
     <section class="set-main">
@@ -171,7 +164,7 @@ async function clearAll(): Promise<void> {
           <span class="set-body">
             <span class="set-name">备份与恢复</span>
           </span>
-          <span class="set-tail">JSON</span>
+          <span class="set-tail">.sp</span>
           <UiIcon class="set-arrow" name="chevronRight" :size="14" />
         </button>
 
@@ -205,7 +198,6 @@ async function clearAll(): Promise<void> {
           <span class="set-art"><UiIcon name="trash" :size="17" /></span>
           <span class="set-body">
             <span class="set-name">清空数据</span>
-            <span class="set-desc">删除本机全部名册、布局、项目与快照</span>
           </span>
           <span class="set-tail">不可恢复</span>
           <UiIcon class="set-arrow" name="chevronRight" :size="14" />
@@ -216,25 +208,18 @@ async function clearAll(): Promise<void> {
     </section>
   </div>
 
-  <UiModal
-    v-model="backupOpen"
-    title="备份与恢复"
-    description="备份文件为单个 JSON，包含全部本机数据。"
-    icon="backup"
-  >
-    <div class="set-op">
+  <UiModal v-model="backupOpen" title="备份与恢复" icon="backup">
+    <div class="set-ops">
       <button class="btn" :disabled="busy" @click="backupAll">
-        <UiIcon name="export" :size="14" />导出全量备份
+        <UiIcon name="export" :size="14" />导出备份
       </button>
-    </div>
-    <div class="set-op">
       <button class="btn" :disabled="busy" @click="importInput?.click()">
-        <UiIcon name="import" :size="14" />从备份导入
+        <UiIcon name="import" :size="14" />导入备份
       </button>
       <input
         ref="importInput"
         type="file"
-        accept=".json"
+        accept=".sp"
         hidden
         @change="importBackup"
       />
@@ -254,7 +239,7 @@ async function clearAll(): Promise<void> {
   <UiModal
     v-model="snapshotOpen"
     title="历史快照"
-    description="只清空排座版本记录，名册、布局与项目不受影响。"
+    description="清空排座版本记录。"
     icon="clock"
   >
     <div class="set-count">
@@ -277,16 +262,13 @@ async function clearAll(): Promise<void> {
   <UiModal
     v-model="clearOpen"
     title="清空数据"
-    description="删除本机全部数据，操作不可恢复。"
+    description="删除全部名册、布局、项目与快照，不可恢复。"
     icon="trash"
   >
     <div class="set-usage">
       <span>本机数据占用</span>
       <b>{{ fmtBytes(usage.totalBytes) }}</b>
     </div>
-    <p class="set-note">
-      将删除全部名册方案、会场布局、排座项目、历史快照与布局预设。
-    </p>
     <template #footer>
       <button class="btn" :disabled="busy" @click="clearOpen = false">
         取消
@@ -375,27 +357,12 @@ async function clearAll(): Promise<void> {
   line-height: 1.75;
   color: var(--text-secondary);
 }
-.set-notes {
-  margin: 18px 0 0;
-  padding: 14px 0 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.set-foot {
+  margin: auto 0 0;
+  padding-top: 12px;
   border-top: 1px solid var(--border-soft);
-}
-.set-notes li {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
   font-size: var(--fs-xs);
-  line-height: 1.65;
   color: var(--text-muted);
-}
-.set-notes li :deep(.ico) {
-  flex: none;
-  margin-top: 3px;
-  opacity: 0.9;
 }
 
 /* ---------- 右栏：操作列表 ---------- */
@@ -465,11 +432,6 @@ async function clearAll(): Promise<void> {
   color: var(--text-primary);
   line-height: 1.4;
 }
-.set-desc {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: 1.5;
-}
 .set-tail {
   font-size: var(--fs-xs);
   color: var(--text-disabled);
@@ -511,17 +473,12 @@ async function clearAll(): Promise<void> {
 }
 
 /* ---------- 弹框内容 ---------- */
-.set-op {
+.set-ops {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
-.set-op + .set-op {
-  padding-top: 14px;
-  border-top: 1px solid var(--border-soft);
-}
-.set-op :deep(.btn) {
+.set-ops :deep(.btn) {
   width: 100%;
 }
 .set-note {
@@ -615,13 +572,8 @@ async function clearAll(): Promise<void> {
   }
 }
 @media (max-width: 420px) {
-  .set-op {
+  .set-ops {
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
-  .set-op :deep(.btn) {
-    width: auto;
-    justify-self: start;
   }
 }
 </style>

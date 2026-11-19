@@ -55,6 +55,17 @@ fn save_file_bytes(path: String, base64: String) -> Result<(), String> {
     fs::write(&path, bytes).map_err(|e| format!("写入文件失败: {e}"))
 }
 
+/// 读取拖入文件的字节内容（路径来自系统拖放事件）
+///
+/// Tauri v1 开启 fileDropEnabled 时，系统拖放由原生层接管，WebView 收不到
+/// HTML5 drop / dataTransfer；前端拿到路径后经这里读成 base64，再还原成 File，
+/// 与浏览器走同一套解析入口。
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    let bytes = fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+    Ok(STANDARD.encode(bytes))
+}
+
 /// 执行写语句，返回受影响行数
 #[tauri::command]
 fn db_execute(db: State<Db>, sql: String, params: Vec<Value>) -> Result<usize, String> {
@@ -103,6 +114,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             save_file_bytes,
+            read_file_base64,
             db_execute,
             db_select
         ])

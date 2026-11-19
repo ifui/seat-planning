@@ -24,8 +24,13 @@ export function nameKey(v: unknown): string {
   return normalizeName(v).toLowerCase()
 }
 
-/** 路径分隔符：/ \ > ＞（全角已被 NFKC 转半角） › 〉 → */
-const PATH_SPLIT_RE = /\s*(?:\/|\\|>|＞|›|〉|→)\s*/
+/** 路径分隔符：/ \ > ＞（全角已被 NFKC 转半角） › 〉 → — – */
+const PATH_SPLIT_RE = /\s*(?:\/|\\|>|＞|›|〉|→|—|–)\s*/
+
+/** 单位自身的名称键：正式名称 + 导入时学到的别名 */
+function unitKeys(u: UnitNode): string[] {
+  return [u.name, ...(u.aliases ?? [])].map((n) => nameKey(n)).filter(Boolean)
+}
 
 export function splitUnitPath(v: unknown): string[] {
   return normalizeName(v)
@@ -122,7 +127,7 @@ export function resolveUnit(
   for (let i = 0; i < segments.length; i++) {
     const key = segments[i].toLowerCase()
     const pool = units.filter(
-      (u) => u.parentId === parentId && nameKey(u.name) === key,
+      (u) => u.parentId === parentId && unitKeys(u).includes(key),
     )
     if (pool.length === 1) {
       matched.push(pool[0])
@@ -163,7 +168,7 @@ export function resolveUnit(
 
   // 路径不成立：按最后一段短名匹配（名称唯一，命中即确定）
   const lastKey = segments[segments.length - 1].toLowerCase()
-  const named = units.filter((u) => nameKey(u.name) === lastKey)
+  const named = units.filter((u) => unitKeys(u).includes(lastKey))
   if (named.length === 1) {
     return {
       kind: 'existing',

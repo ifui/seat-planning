@@ -14,7 +14,9 @@ import type {
   Member,
   Project,
   ProjectSeatOverlay,
+  RankDef,
   RosterPlan,
+  UnitNode,
   ZoneDef,
 } from "../types";
 import { DEFAULT_RULESET } from "../types";
@@ -50,7 +52,8 @@ import {
 import { chartFrame, renderSeatChart } from "../engine/render";
 import {
   duplicateUnitGroups,
-  planRankInputs,
+  nameKey,
+  normalizeName,
   planUnitInputs,
   unitPathOf,
 } from "../engine/unitMatch";
@@ -2198,22 +2201,60 @@ async function submitAdd(): Promise<void> {
   );
 }
 
-// ---- 导入名册：复用名册页的批量导入（文件解析 / 字段映射 / 预览修正） ----
+// ---- 导入名册：复用名册页的批量导入（文件解析 / 列角色 / 逐行确认） ----
 const importOpen = ref(false);
 /** 导入结果：跳过的重名名单（默认拒绝），避免静默丢弃 */
 const importResult = ref<{ imported: number; skipped: { name: string; unit: string }[] } | null>(null);
 
+/** 学习别名：只回写指向已有实体的映射，避免把错误映射固化下来 */
+function learnUnitAlias(units: UnitNode[], unitId: string, raw: string): boolean {
+  const text = normalizeName(raw);
+  const key = nameKey(text);
+  const target = units.find((u) => u.id === unitId);
+  if (!target || !key) return false;
+  if (nameKey(target.name) === key) return false;
+  if ((target.aliases ?? []).some((a) => nameKey(a) === key)) return false;
+  const owner = units.find(
+    (u) =>
+      u.id !== unitId &&
+      [u.name, ...(u.aliases ?? [])].some((n) => nameKey(n) === key),
+  );
+  if (owner) return false;
+  target.aliases = [...(target.aliases ?? []), text];
+  return true;
+}
+
+function learnRankAlias(ranks: RankDef[], rankId: string, raw: string): boolean {
+  const text = normalizeName(raw);
+  const key = nameKey(text);
+  const target = ranks.find((r) => r.id === rankId);
+  if (!target || !key) return false;
+  if (nameKey(target.name) === key) return false;
+  if ((target.aliases ?? []).some((a) => nameKey(a) === key)) return false;
+  const owner = ranks.find(
+    (r) =>
+      r.id !== rankId &&
+      [r.name, ...(r.aliases ?? [])].some((n) => nameKey(n) === key),
+  );
+  if (owner) return false;
+  target.aliases = [...(target.aliases ?? []), text];
+  return true;
+}
+
 /**
- * 项目内导入：与名册页共用 planUnitInputs / planRankInputs，
- * 未知单位按路径前缀新建（不再静默归入根单位），预览与写入结果一致。
+ * 项目内导入：单位沿用 planUnitInputs（预览与写入一致），
+ * 职级只创建用户显式新建的条目，认不出的不会被悄悄补一条。
  */
 function handleProjectImport(payload: {
   rows: {
     name: string;
     unit: string;
-    rank: string;
+    rankId: string;
+    newRank?: string;
     duty: string;
     note: string;
+    aliasRank?: string;
+    aliasUnit?: string;
   }[];
   targetUnitId: string;
   allowDuplicate: boolean;
@@ -2231,12 +2272,8 @@ function handleProjectImport(payload: {
     payload.rows.map((r) => r.unit),
     fallbackUnit,
   );
-  const rankPlan = planRankInputs(
-    snap.ranks,
-    payload.rows.map((r) => r.rank),
-  );
-  if (unitPlan.conflicts || rankPlan.conflicts) {
-    flash("单位或职级存在重名，已停止导入，请按预览提示修正");
+  if (unitPlan.conflicts) {
+    flash("单位存在重名，已停止导入，请按预览提示修正");
     return;
   }
 
@@ -2257,23 +2294,52 @@ function handleProjectImport(payload: {
     snap.units.push({ id, name: nu.name, parentId, order });
   }
 
-  const rankIdMap = new Map<string, string>();
-  const rankStart = Math.max(-1, ...snap.ranks.map((r) => r.order)) + 1;
-  rankPlan.newRanks.forEach((nr, i) => {
-    const id = uid("rank");
-    rankIdMap.set(nr.tempId, id);
+  // 只创建用户在预览页显式新建的职级
+  const createdRanks: string[] = [];
+  let rankOrder = Math.max(-1, ...snap.ranks.map((r) => r.order)) + 1;
+  for (const row of payload.rows) {
+    if (row.rankId) continue;
+    const name = normalizeName(row.newRank ?? "");
+    if (!name) continue;
+    if (snap.ranks.some((r) => nameKey(r.name) === nameKey(name))) continue;
     snap.ranks.push({
-      id,
-      name: nr.name,
-      order: rankStart + i,
-      color: COLOR_PRESETS.slice(1)[(rankStart + i) % (COLOR_PRESETS.length - 1)],
+      id: uid("rank"),
+      name,
+      order: rankOrder,
+      color: COLOR_PRESETS.slice(1)[rankOrder % (COLOR_PRESETS.length - 1)],
     });
-  });
+    createdRanks.push(name);
+    rankOrder++;
+  }
 
-  const fallbackRank = [...snap.ranks].sort((a, b) => b.order - a.order)[0];
+  let fallbackRank = [...snap.ranks].sort((a, b) => b.order - a.order)[0];
+  if (!fallbackRank) {
+    fallbackRank = {
+      id: uid("rank"),
+      name: "未定级",
+      order: 0,
+      color: COLOR_PRESETS.slice(1)[0],
+    };
+    snap.ranks.push(fallbackRank);
+  }
+
+  const rankIdOf = (
+    row: (typeof payload.rows)[number],
+  ): string => {
+    if (row.rankId && snap.ranks.some((r) => r.id === row.rankId))
+      return row.rankId;
+    const key = nameKey(row.newRank ?? "");
+    if (key) {
+      const hit = snap.ranks.find((r) => nameKey(r.name) === key);
+      if (hit) return hit.id;
+    }
+    return fallbackRank!.id;
+  };
+
   const wasEmpty = !draft.value.participantIds.length;
   const createdIds: string[] = [];
   const skipped: { name: string; unit: string }[] = [];
+  let learned = 0;
   const dupKey = (name: string, unitId: string) => `${name.trim()}\u0000${unitId}`;
   const seen = new Set(snap.members.map((m) => dupKey(m.name, m.unitId)));
 
@@ -2282,6 +2348,12 @@ function handleProjectImport(payload: {
     const unitId = resolved?.unitId
       ? (unitIdMap.get(resolved.unitId) ?? resolved.unitId)
       : fallbackUnit;
+    if (row.aliasUnit && resolved?.kind === "existing") {
+      if (learnUnitAlias(snap.units, unitId, row.aliasUnit)) learned++;
+    }
+    const rankId = rankIdOf(row);
+    if (row.aliasRank && learnRankAlias(snap.ranks, rankId, row.aliasRank))
+      learned++;
     if (!payload.allowDuplicate && seen.has(dupKey(row.name, unitId))) {
       skipped.push({
         name: row.name,
@@ -2289,10 +2361,6 @@ function handleProjectImport(payload: {
       });
       return;
     }
-    const rankRes = rankPlan.items[i];
-    const rankId = rankRes?.rankId
-      ? (rankIdMap.get(rankRes.rankId) ?? rankRes.rankId)
-      : (fallbackRank?.id ?? "");
     const member: Member = {
       id: uid("m"),
       name: row.name,
@@ -2316,7 +2384,8 @@ function handleProjectImport(payload: {
   importResult.value = { imported: createdIds.length, skipped };
   const extras = [
     unitPlan.newUnits.length ? `新建单位 ${unitPlan.newUnits.length} 个` : "",
-    rankPlan.newRanks.length ? `新建职级 ${rankPlan.newRanks.length} 个` : "",
+    createdRanks.length ? `新建职级 ${createdRanks.length} 个` : "",
+    learned ? `学习别名 ${learned} 条` : "",
   ].filter(Boolean);
   flash(
     `已导入 ${createdIds.length} 人${skipped.length ? `，跳过重名 ${skipped.length} 人` : ""}${extras.length ? `，${extras.join("、")}` : ""}`,

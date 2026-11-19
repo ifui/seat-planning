@@ -12,6 +12,14 @@ export interface RawTable {
   warnings: string[]
 }
 
+/** 原始二维表：保留表头行之前的标题/说明行，供自适应解析自行探测表头 */
+export interface RawSheet {
+  sourceName: string
+  sheetName: string
+  rows: string[][]
+  warnings: string[]
+}
+
 export interface FieldMap {
   name: number
   unit: number
@@ -314,22 +322,45 @@ function buildTable(sourceName: string, rawRows: string[][], warnings: string[] 
   return { sourceName, columns, rows: data, hasHeader, warnings }
 }
 
-export async function readRosterFile(file: File): Promise<RawTable> {
+/** 列出文件里可导入的工作表（Excel 过滤空表；Word / 文本用固定名称） */
+export async function listRosterSheets(file: File): Promise<string[]> {
+  const ext = file.name.toLowerCase().split('.').pop() ?? ''
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+    return wb.SheetNames.filter((name) => {
+      const ws = wb.Sheets[name]
+      if (!ws || !ws['!ref']) return false
+      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' })
+      return rows.some((r) => r.some((c) => clean(c)))
+    })
+  }
+  if (ext === 'docx') return ['Word 正文']
+  if (ext === 'doc') return []
+  return ['']
+}
+
+/** 读取文件为原始二维表（不做表头判断，保留标题行与空行剔除后的全部内容） */
+export async function readRosterSheet(file: File, sheetName?: string): Promise<RawSheet> {
   const name = file.name
   const ext = name.toLowerCase().split('.').pop() ?? ''
   if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' })
     const warnings: string[] = []
+    // 指定了工作表时优先读它，读不到再回退到第一个非空表
+    const order =
+      sheetName && wb.SheetNames.includes(sheetName)
+        ? [sheetName, ...wb.SheetNames.filter((n) => n !== sheetName)]
+        : [...wb.SheetNames]
     let first = ''
-    for (const sheetName of wb.SheetNames) {
-      const ws = wb.Sheets[sheetName]
+    for (const tab of order) {
+      const ws = wb.Sheets[tab]
       if (!ws || !ws['!ref']) continue
       const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' })
       if (rows.some((r) => r.some((c) => clean(c)))) {
-        if (wb.SheetNames.length > 1) warnings.push(`已读取工作表「${sheetName}」，其余工作表未导入`)
-        return buildTable(name, rows.map((r) => r.map(clean)), warnings)
+        if (order.length > 1) warnings.push(`已读取工作表「${tab}」，其余工作表未导入`)
+        return { sourceName: file.name, sheetName: tab, rows: rows.map((r) => r.map(clean)), warnings }
       }
-      first = first || sheetName
+      first = first || tab
     }
     throw new Error(`Excel 中没有找到数据${first ? `（工作表「${first}」为空）` : ''}`)
   }
@@ -337,7 +368,12 @@ export async function readRosterFile(file: File): Promise<RawTable> {
     const lines = await readDocxLines(file)
     if (!lines.length) throw new Error('Word 文档中没有可读取的文字')
     const rows = lines.map((line) => (line.includes('\t') ? line.split('\t') : [line]))
-    return buildTable(name, rows, ['Word 按段落/表格行读取，复杂版式建议另存为 Excel'])
+    return {
+      sourceName: name,
+      sheetName: 'Word 正文',
+      rows,
+      warnings: ['Word 按段落/表格行读取，复杂版式建议另存为 Excel'],
+    }
   }
   if (ext === 'doc') {
     throw new Error('不支持旧版 .doc，请在 Word 中另存为 .docx 或 .xlsx 后再导入')
@@ -345,9 +381,14 @@ export async function readRosterFile(file: File): Promise<RawTable> {
   if (ext === 'csv' || ext === 'txt' || ext === 'tsv') {
     const text = await decodeText(file)
     const delimiter = ext === 'tsv' ? '\t' : detectDelimiter(text)
-    return buildTable(name, parseDelimited(text, delimiter), [])
+    return { sourceName: name, sheetName: '', rows: parseDelimited(text, delimiter), warnings: [] }
   }
   throw new Error('仅支持 .xlsx / .xls / .docx / .csv / .txt 文件')
+}
+
+export async function readRosterFile(file: File): Promise<RawTable> {
+  const sheet = await readRosterSheet(file)
+  return buildTable(sheet.sourceName, sheet.rows, sheet.warnings)
 }
 
 /** 根据表头与内容特征推断字段列 */

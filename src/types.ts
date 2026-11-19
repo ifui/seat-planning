@@ -4,6 +4,8 @@ export interface RankDef {
   id: string
   name: string
   shortName?: string
+  /** 导入时学到的别名：同类写法下次直接命中（随名册与备份） */
+  aliases?: string[]
   order: number
   color: string
 }
@@ -14,6 +16,8 @@ export interface UnitNode {
   parentId: string | null
   order: number
   code?: string
+  /** 导入时学到的别名：同类写法下次直接命中（随名册与备份） */
+  aliases?: string[]
 }
 
 /** 人员在位状态：请假者不参与排座，在排座页单独列出 */

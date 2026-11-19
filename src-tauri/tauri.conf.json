@@ -31,7 +31,8 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "visible": true
+        "visible": true,
+        "fileDropEnabled": true
       }
     ],
     "security": {

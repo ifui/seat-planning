@@ -4404,6 +4404,36 @@ input[type="checkbox"]:disabled {
   content: " ·";
   color: var(--text-disabled);
 }
+/* 名单树组头统计：层级聚合的在位 / 请假人数 */
+.ug-stat {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-disabled);
+  font-variant-numeric: tabular-nums;
+}
+/* 排序模式下组头的上移 / 下移按钮 */
+.ug-move {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ug-move:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.ug-move:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
 
 /* ---- 批量设置状态弹窗 ---- */
 .batch-tools {

@@ -360,6 +360,12 @@ export interface Project {
   seatCapacity?: Record<string, number>
   /** 项目对布局的覆盖层：本次会议的区域与停用座位 */
   seatOverlay?: ProjectSeatOverlay
+  /**
+   * 参会名单的单位显示顺序（项目内自定义）：unitId → 序号。
+   * 仅影响名单区的树状排序，不改全局编制序列（unit.order），
+   * 也排座引擎与其它项目均不读取此字段。
+   */
+  listUnitOrder?: Record<string, number>
   assignments: Assignment[]
   participantIds: string[]
   unassigned: string[]

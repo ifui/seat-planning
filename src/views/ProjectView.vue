@@ -2203,12 +2203,17 @@ async function submitAdd(): Promise<void> {
   );
 }
 
-// ---- 名单分组：默认按单位收起，展开看具体人 ----
+// ---- 名单分组：按编制序列树状显示，层级聚合在位 / 请假人数 ----
 interface MemberGroup {
   unitId: string;
   name: string;
   members: Member[];
   leaveCount: number;
+  /** 树状行附加信息（仅参会名单区使用） */
+  presentCount?: number;
+  depth?: number;
+  hasChildren?: boolean;
+  expanded?: boolean;
 }
 const expandedUnits = ref<Set<string>>(new Set());
 
@@ -2219,6 +2224,7 @@ function toggleUnitGroup(unitId: string): void {
   expandedUnits.value = s;
 }
 
+/** 扁平分组（批量状态弹窗沿用）：按单位归堆，不建树 */
 function buildGroups(source: Member[]): MemberGroup[] {
   const units = roster.value?.units ?? [];
   const orderIdx = new Map(units.map((u, i) => [u.id, i]));
@@ -2248,26 +2254,262 @@ function buildGroups(source: Member[]): MemberGroup[] {
   return out;
 }
 
-const memberGroups = computed<MemberGroup[] | null>(() => {
-  if (rosterQuery.value.trim()) return null;
-  return buildGroups(participants.value);
+// ---- 名单单位树：排序 = 项目内自定义顺序（listUnitOrder），未自定义时按编制序列 ----
+function unitSeqOf(id: string, units: UnitNode[]): number {
+  const o = draft.value?.listUnitOrder?.[id];
+  if (typeof o === "number") return o;
+  const u = units.find((x) => x.id === id);
+  return 100000 + (u?.order ?? 9999);
+}
+
+/** 首次排序 / 新建单位时初始化：把当前树的全序写入 listUnitOrder（此后名单排序与编制序列解耦）。
+ *  新补的编号从已有最大值之后继续，保证与既有自定义顺序不冲突。 */
+function ensureListOrder(): Record<string, number> {
+  const p = draft.value!;
+  if (!p.listUnitOrder || typeof p.listUnitOrder !== "object")
+    p.listUnitOrder = {};
+  const order = p.listUnitOrder;
+  let i = 0;
+  for (const v of Object.values(order)) {
+    if (typeof v === "number" && v >= i) i = v + 1;
+  }
+  const units = roster.value?.units ?? [];
+  const childrenOf = (pid: string | null): UnitNode[] =>
+    units
+      .filter((u) => (u.parentId ?? null) === pid)
+      .sort((a, b) => unitSeqOf(a.id, units) - unitSeqOf(b.id, units));
+  const walk = (pid: string | null): void => {
+    for (const u of childrenOf(pid)) {
+      if (typeof order[u.id] !== "number") order[u.id] = i++;
+      walk(u.id);
+    }
+  };
+  walk(null);
+  return order;
+}
+
+interface UnitTreeRow {
+  unitId: string;
+  name: string;
+  depth: number;
+  hasChildren: boolean;
+  expanded: boolean;
+  /** 直接挂在该单位的成员（展开时显示） */
+  members: Member[];
+  /** 含全部下级的聚合人数 */
+  presentCount: number;
+  leaveCount: number;
+}
+
+const unitTreeRows = computed<UnitTreeRow[]>(() => {
+  const units = roster.value?.units ?? [];
+  const byId = new Map(units.map((u) => [u.id, u]));
+  const direct = new Map<string, Member[]>();
+  for (const m of participants.value) {
+    const k = m.unitId && byId.has(m.unitId) ? m.unitId : "__none__";
+    const arr = direct.get(k);
+    if (arr) arr.push(m);
+    else direct.set(k, [m]);
+  }
+  const childrenOf = (pid: string | null): UnitNode[] =>
+    units
+      .filter((u) => (u.parentId ?? null) === pid)
+      .sort((a, b) => unitSeqOf(a.id, units) - unitSeqOf(b.id, units));
+  // 自底向上聚合人数；有人（自身或下级）的分支才保留，空单位不出现在名单
+  const agg = new Map<string, { present: number; leave: number }>();
+  const kept = new Set<string>();
+  let guard = 0;
+  const measure = (u: UnitNode): { present: number; leave: number } => {
+    let present = 0;
+    let leave = 0;
+    if (guard++ < 100) {
+      for (const c of childrenOf(u.id)) {
+        const sub = measure(c);
+        present += sub.present;
+        leave += sub.leave;
+      }
+    }
+    for (const m of direct.get(u.id) ?? []) {
+      if (m.status === "leave") leave++;
+      else present++;
+    }
+    agg.set(u.id, { present, leave });
+    if (present + leave > 0) kept.add(u.id);
+    return { present, leave };
+  };
+  for (const u of childrenOf(null)) measure(u);
+
+  const rows: UnitTreeRow[] = [];
+  const walk = (pid: string | null, depth: number): void => {
+    for (const u of childrenOf(pid)) {
+      if (!kept.has(u.id)) continue;
+      const kids = childrenOf(u.id).filter((c) => kept.has(c.id));
+      const expanded = expandedUnits.value.has(u.id);
+      const a = agg.get(u.id) ?? { present: 0, leave: 0 };
+      rows.push({
+        unitId: u.id,
+        name: u.name,
+        depth,
+        hasChildren: kids.length > 0,
+        expanded,
+        members: expanded ? (direct.get(u.id) ?? []) : [],
+        presentCount: a.present,
+        leaveCount: a.leave,
+      });
+      if (expanded) walk(u.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+
+  const orphans = direct.get("__none__") ?? [];
+  if (orphans.length) {
+    rows.push({
+      unitId: "__none__",
+      name: "未分单位",
+      depth: 0,
+      hasChildren: false,
+      expanded: expandedUnits.value.has("__none__"),
+      members: expandedUnits.value.has("__none__") ? orphans : [],
+      presentCount: orphans.filter((m) => m.status !== "leave").length,
+      leaveCount: orphans.filter((m) => m.status === "leave").length,
+    });
+  }
+  return rows;
 });
 
-/** 名单渲染分段：搜索时平铺，其余按单位分组（未展开的组只显示组头） */
+/** 名单渲染分段：搜索时平铺，其余按编制序列树状分组（未展开的组只显示组头） */
 const listSections = computed<
   { key: string; group: MemberGroup | null; members: Member[] }[]
 >(() => {
-  const groups = memberGroups.value;
-  if (!groups)
+  if (rosterQuery.value.trim())
     return [
       { key: "__flat__", group: null, members: filteredParticipants.value },
     ];
-  return groups.map((g) => ({
-    key: g.unitId,
-    group: g,
-    members: expandedUnits.value.has(g.unitId) ? g.members : [],
+  return unitTreeRows.value.map((r) => ({
+    key: r.unitId,
+    group: {
+      unitId: r.unitId,
+      name: r.name,
+      members: r.members,
+      leaveCount: r.leaveCount,
+      presentCount: r.presentCount,
+      depth: r.depth,
+      hasChildren: r.hasChildren,
+      expanded: r.expanded,
+    },
+    members: r.members,
   }));
 });
+
+// ---- 名单排序：项目内自定义单位顺序，只影响本项目名单，不改编制序列 ----
+const sortMode = ref(false);
+
+function siblingsOf(unitId: string): UnitNode[] {
+  const units = roster.value?.units ?? [];
+  const u = units.find((x) => x.id === unitId);
+  if (!u) return [];
+  const order = draft.value?.listUnitOrder;
+  return units
+    .filter((x) => (x.parentId ?? null) === (u.parentId ?? null))
+    .sort(
+      (a, b) =>
+        (order?.[a.id] ?? unitSeqOf(a.id, units)) -
+        (order?.[b.id] ?? unitSeqOf(b.id, units)),
+    );
+}
+
+function canMoveUnit(unitId: string, dir: -1 | 1): boolean {
+  const s = siblingsOf(unitId);
+  const i = s.findIndex((x) => x.id === unitId);
+  return i >= 0 && i + dir >= 0 && i + dir < s.length;
+}
+
+function moveUnitRow(unitId: string, dir: -1 | 1): void {
+  if (!draft.value || !canMoveUnit(unitId, dir)) return;
+  const order = ensureListOrder();
+  const siblings = siblingsOf(unitId);
+  const i = siblings.findIndex((x) => x.id === unitId);
+  const a = siblings[i];
+  const b = siblings[i + dir];
+  const t = order[a.id];
+  order[a.id] = order[b.id];
+  order[b.id] = t;
+  autosaveSeq++;
+  window.clearTimeout(autosaveTimer);
+  void saveProject(draft.value);
+  dirty.value = false;
+}
+
+// ---- 名单内新建单位：只写入项目快照，不影响全局名册与其它项目 ----
+const unitAddOpen = ref(false);
+const unitForm = ref({ name: "", parentId: "" });
+
+const unitParentOptions = computed(() => {
+  const units = roster.value?.units ?? [];
+  const opts: { value: string; label: string }[] = [
+    { value: "", label: "无（根级单位）" },
+  ];
+  const walk = (pid: string | null, d: number): void => {
+    for (const u of childrenByOrder(units, pid)) {
+      opts.push({ value: u.id, label: `${"　".repeat(d)}${u.name}` });
+      walk(u.id, d + 1);
+    }
+  };
+  walk(null, 0);
+  return opts;
+});
+
+function childrenByOrder(units: UnitNode[], pid: string | null): UnitNode[] {
+  return units
+    .filter((u) => (u.parentId ?? null) === pid)
+    .sort((a, b) => unitSeqOf(a.id, units) - unitSeqOf(b.id, units));
+}
+
+function openUnitAdd(): void {
+  unitForm.value = { name: "", parentId: "" };
+  unitAddOpen.value = true;
+}
+
+async function submitUnitAdd(): Promise<void> {
+  const snap = draft.value?.rosterSnapshot;
+  if (!draft.value || !snap) return;
+  const name = normalizeName(unitForm.value.name);
+  if (!name) {
+    flash("请填写单位名称");
+    return;
+  }
+  const key = nameKey(name);
+  const clash = snap.units.find((u) => nameKey(u.name) === key);
+  if (clash) {
+    flash(
+      `「${name}」与已有单位重名（${unitPathOf(snap.units, clash.id)}），单位名称必须全树唯一`,
+    );
+    return;
+  }
+  const parentId = unitForm.value.parentId || null;
+  const order = ensureListOrder();
+  const siblings = childrenByOrder(snap.units, parentId);
+  const node: UnitNode = {
+    id: uid("unit"),
+    name,
+    parentId,
+    order: siblings.length,
+  };
+  snap.units.push(node);
+  order[node.id] =
+    siblings.reduce((m, u) => Math.max(m, order[u.id] ?? -1), -1) + 1;
+  if (parentId) {
+    const s = new Set(expandedUnits.value);
+    s.add(parentId);
+    expandedUnits.value = s;
+  }
+  autosaveSeq++;
+  window.clearTimeout(autosaveTimer);
+  await saveProject(draft.value);
+  dirty.value = false;
+  unitAddOpen.value = false;
+  flash(`已新建单位「${name}」`);
+}
 
 // ---- 批量状态：弹窗里按单位勾选，一键设为在位 / 请假 ----
 const batchOpen = ref(false);
@@ -3829,8 +4071,20 @@ async function restoreSnap(id: string): Promise<void> {
                 <button type="button" class="btn sm" @click="openBatch">
                   <Icon name="selectAll" :size="12" />批量
                 </button>
+                <button
+                  type="button"
+                  class="btn sm"
+                  :class="{ primary: sortMode }"
+                  :title="sortMode ? '退出排序' : '调整单位显示顺序（仅本项目名单）'"
+                  @click="sortMode = !sortMode"
+                >
+                  <Icon name="grip" :size="12" />排序
+                </button>
                 <button type="button" class="btn sm" @click="openCheckin">
                   <Icon name="check" :size="12" />签到核对
+                </button>
+                <button type="button" class="btn sm" @click="openUnitAdd">
+                  <Icon name="plus" :size="12" />新建单位
                 </button>
               </div>
 
@@ -3852,25 +4106,46 @@ async function restoreSnap(id: string): Promise<void> {
                     v-if="sec.group"
                     type="button"
                     class="unit-group-head"
-                    :aria-expanded="expandedUnits.has(sec.group.unitId)"
+                    :style="
+                      sec.group.depth
+                        ? { paddingLeft: 8 + (sec.group.depth ?? 0) * 16 + 'px' }
+                        : undefined
+                    "
+                    :aria-expanded="!!sec.group.expanded"
                     @click="toggleUnitGroup(sec.group.unitId)"
                   >
                     <Icon
                       name="chevronRight"
                       :size="10"
                       class="ug-chevron"
-                      :class="{
-                        open: expandedUnits.has(sec.group.unitId),
-                      }"
+                      :class="{ open: !!sec.group.expanded }"
                     />
                     <span class="ug-name">{{ sec.group.name }}</span>
                     <span class="grow" />
-                    <span v-if="sec.group.leaveCount" class="ug-leave"
-                      >请假 {{ sec.group.leaveCount }}</span
+                    <span class="ug-stat"
+                      >在位 {{ sec.group.presentCount ?? 0 }} · 请假
+                      {{ sec.group.leaveCount }}</span
                     >
-                    <span class="ug-count"
-                      >{{ sec.group.members.length }} 人</span
-                    >
+                    <template v-if="sortMode && sec.group.unitId !== '__none__'">
+                      <button
+                        type="button"
+                        class="ug-move"
+                        :disabled="!canMoveUnit(sec.group.unitId, -1)"
+                        title="上移"
+                        @click.stop="moveUnitRow(sec.group.unitId, -1)"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 8V2M2 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="ug-move"
+                        :disabled="!canMoveUnit(sec.group.unitId, 1)"
+                        title="下移"
+                        @click.stop="moveUnitRow(sec.group.unitId, 1)"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+                      </button>
+                    </template>
                   </button>
                   <div
                     v-for="m in sec.members"
@@ -3888,6 +4163,14 @@ async function restoreSnap(id: string): Promise<void> {
                             a.memberId === m.id && a.seatId === focusedSeat,
                         ),
                     }"
+                    :style="
+                      sec.group
+                        ? {
+                            paddingLeft:
+                              26 + (sec.group.depth ?? 0) * 16 + 'px',
+                          }
+                        : undefined
+                    "
                     @click="focusMember(m)"
                     @keydown.enter.prevent="focusMember(m)"
                   >
@@ -4491,6 +4774,31 @@ async function restoreSnap(id: string): Promise<void> {
       >
         设为请假（{{ batchPicked.size }}）
       </UiButton>
+    </template>
+  </UiModal>
+
+  <!-- 新建单位：仅写入本项目名册快照，不影响全局名册 -->
+  <UiModal v-model="unitAddOpen" title="新建单位" width="400px">
+    <div class="field">
+      <label>单位名称</label>
+      <UiInput
+        v-model="unitForm.name"
+        placeholder="如：办公室"
+        @keyup.enter="submitUnitAdd"
+      />
+    </div>
+    <div class="field" style="margin-top: 10px">
+      <label>上级单位</label>
+      <UiSelect
+        :model-value="unitForm.parentId"
+        :options="unitParentOptions"
+        placeholder="无（根级单位）"
+        @update:model-value="unitForm.parentId = $event"
+      />
+    </div>
+    <template #footer>
+      <UiButton variant="ghost" @click="unitAddOpen = false">取消</UiButton>
+      <UiButton variant="primary" @click="submitUnitAdd">添加单位</UiButton>
     </template>
   </UiModal>
 

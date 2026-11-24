@@ -22,6 +22,9 @@ import {
 } from "../ui/charts";
 import ImportDialog from "../components/roster/ImportDialog.vue";
 import { nameKey, normalizeName, planUnitInputs, unitPathOf } from "../engine/unitMatch";
+import { saveFile } from "../platform/files";
+import * as XLSX from "xlsx";
+import { UiDropdown, UiMenuItem } from "../ui";
 
 const emit = defineEmits<{
   (e: "open-ranks", rosterId: string): void;
@@ -155,7 +158,7 @@ const unitPaths = computed<UnitPath[]>(() => {
       names.unshift(p.name);
       p = p.parentId ? byId.get(p.parentId) : undefined;
     }
-    return names.join(" / ");
+    return names.join("/");
   };
   const orderOf = (u: UnitNode): number[] => {
     const out: number[] = [u.order];
@@ -1115,6 +1118,61 @@ function submitBatch(): void {
   flash(`已加入 ${names.length} 人，记得保存`);
 }
 
+// ---- 导出人员名单 / 导入模板 ----
+async function exportRosterPersons(): Promise<void> {
+  const d = draft.value;
+  if (!d) return;
+  if (!baseList.value.length) {
+    flash("名册为空");
+    return;
+  }
+  const rows: (string | number)[][] = [
+    ["姓名", "单位", "职级", "职务", "备注"],
+  ];
+  for (const m of baseList.value) {
+    rows.push([
+      m.name,
+      unitPaths.value.find((u) => u.node.id === m.unitId)?.pathName ?? "",
+      d.ranks.find((r) => r.id === m.rankId)?.name ?? "",
+      m.duty ?? "",
+      m.note ?? "",
+    ]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 10 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 18 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "人员名单");
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+  const res = await saveFile(
+    `${d.name.replace(/\s+/g, "-")}-人员名单.xlsx`,
+    new Blob([buf], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    "xlsx",
+  );
+  if (res.saved) flash(`已导出 ${baseList.value.length} 人`);
+}
+
+async function exportRosterTemplate(): Promise<void> {
+  const rows = [
+    ["姓名", "单位", "职级", "职务", "备注"],
+    ["张三", "办公室", "正科级", "主任", "示例行，填好后删除"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 10 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 22 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "人员名单");
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+  const res = await saveFile(
+    "人员名单导入模板.xlsx",
+    new Blob([buf], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    "xlsx",
+  );
+  if (res.saved) flash("模板已导出");
+}
+
 // ---- 文件批量导入 ----
 const importOpen = ref(false);
 /** 导入结果：成功数与跳过的重名名单，避免静默丢弃 */
@@ -1398,6 +1456,25 @@ async function handleImport(payload: {
             <h2 class="roster-panel-title">人员名册</h2>
           </div>
           <div class="roster-panel-actions">
+            <UiDropdown align="left" :min-width="150">
+              <template #trigger>
+                <button class="btn sm">
+                  <UiIcon name="export" :size="13" />导出
+                </button>
+              </template>
+              <template #default="{ close }">
+                <UiMenuItem
+                  icon="export"
+                  label="导出人员名单"
+                  @click="exportRosterPersons(); close()"
+                />
+                <UiMenuItem
+                  icon="import"
+                  label="导出导入模板"
+                  @click="exportRosterTemplate(); close()"
+                />
+              </template>
+            </UiDropdown>
             <button class="btn sm" @click="openDuplicates">
               <UiIcon name="search" :size="13" />查找重名
             </button>

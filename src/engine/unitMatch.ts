@@ -39,7 +39,7 @@ export function splitUnitPath(v: unknown): string[] {
     .filter(Boolean)
 }
 
-/** 单位全路径，形如「局机关 / 办公室」 */
+/** 单位全路径，形如「局机关/办公室」 */
 export function unitPathOf(
   units: UnitNode[],
   unit: UnitNode | string | null | undefined,
@@ -55,7 +55,7 @@ export function unitPathOf(
     names.unshift(p.name)
     p = p.parentId ? byId.get(p.parentId) : undefined
   }
-  return names.join(' / ')
+  return names.join('/')
 }
 
 export interface UnitCandidate {

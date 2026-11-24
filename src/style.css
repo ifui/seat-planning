@@ -1779,7 +1779,9 @@ details.ui-fold[open] > summary::before {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-.import-result-line b.warn { color: var(--warning); }
+.import-result-line b.warn {
+  color: var(--warning);
+}
 .import-result-extra {
   margin: 6px 0 0;
   font-size: var(--fs-xs);
@@ -1817,8 +1819,12 @@ details.ui-fold[open] > summary::before {
   font-size: var(--fs-xs);
   border-bottom: 1px solid var(--border-soft);
 }
-.import-skip li:last-child { border-bottom: none; }
-.import-skip-name { color: var(--text-primary); }
+.import-skip li:last-child {
+  border-bottom: none;
+}
+.import-skip-name {
+  color: var(--text-primary);
+}
 .import-skip-unit {
   color: var(--text-muted);
   overflow: hidden;
@@ -2519,6 +2525,50 @@ details.ui-fold[open] > summary::before {
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   cursor: pointer;
+}
+
+/* ---------- 全站统一复选框：自绘样式，替代浏览器原生外观 ---------- */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg);
+  position: relative;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--primary-line);
+}
+input[type="checkbox"]:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translate(-50%, -55%) rotate(45deg);
+}
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--primary-line);
+  outline-offset: 1px;
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .marquee {
@@ -3350,7 +3400,7 @@ details.ui-fold[open] > summary::before {
   margin: 0 2px;
 }
 .project-side {
-  width: 326px;
+  width: 370px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -3832,8 +3882,9 @@ details.ui-fold[open] > summary::before {
   color: var(--text-primary);
   word-break: break-word;
 }
-.member-row.is-leave {
-  background: var(--warning-soft, #fbf5e9);
+.member-row.is-leave .member-name,
+.member-row.is-leave .member-hint {
+  color: var(--text-disabled);
 }
 .notice {
   padding: 12px;
@@ -3849,12 +3900,12 @@ details.ui-fold[open] > summary::before {
   line-height: 1.7;
 }
 .member-list {
-  margin-top: 10px;
-  max-height: 280px;
+  max-height: 340px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  padding-right: 2px;
 }
 .member-search {
   display: flex;
@@ -4210,17 +4261,15 @@ details.ui-fold[open] > summary::before {
 }
 .member-row.is-clickable {
   cursor: pointer;
-  border-radius: 4px;
 }
-/* 名单行里的职务：短标签，完整可读 */
+/* 名单行里的职务：纯文字次要信息，不再做成色块 */
 .member-duty {
   flex: none;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--bg-subtle);
-  color: var(--text-muted);
-  font-size: 9.5px;
-  line-height: 15px;
+  padding: 0;
+  background: none;
+  color: var(--text-disabled);
+  font-size: 10px;
+  line-height: 1.5;
   white-space: nowrap;
 }
 .member-row.is-clickable:hover {
@@ -4234,10 +4283,15 @@ details.ui-fold[open] > summary::before {
 .member-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 4px;
-  border-bottom: 1px solid var(--border-soft);
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 4px;
   font-size: var(--fs-xs);
+  transition: background var(--motion-fast) ease;
+}
+/* 组内成员与组头文字对齐（chevron 10px + 间距 6px + 组头左 8px） */
+.member-row.is-grouped {
+  padding-left: 24px;
 }
 .member-row .member-name {
   flex: none;
@@ -4260,15 +4314,302 @@ details.ui-fold[open] > summary::before {
 }
 .member-row .tag {
   flex: none;
+  padding: 1px 6px;
+  font-size: 9.5px;
 }
 .member-row .status-toggle {
   flex: none;
   margin-left: 2px;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
 }
 .member-row .st-btn {
-  padding: 2px 7px;
+  padding: 2px 6px;
   font-size: 10.5px;
+  border-radius: 3px;
+  transition:
+    background var(--motion-fast) ease,
+    color var(--motion-fast) ease;
 }
+.member-row .st-btn + .st-btn {
+  border-left: 0;
+}
+.member-row .st-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.member-row .st-btn.on {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+.member-row .st-btn.leave.on {
+  background: var(--warning-soft);
+  color: #8a6027;
+}
+
+/* ---- 名单按单位分组 ---- */
+.list-tools {
+  flex-wrap: wrap;
+}
+.list-tools .member-search {
+  flex: 1 1 100%;
+}
+.unit-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--motion-fast) ease;
+}
+.unit-group-head:hover {
+  background: var(--bg-hover);
+}
+.ug-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--motion-fast) ease;
+}
+.ug-chevron.open {
+  transform: rotate(90deg);
+}
+.ug-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.ug-count {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-disabled);
+}
+.ug-leave {
+  flex: none;
+  font-size: 10px;
+  color: #8a6027;
+}
+.ug-leave::after {
+  content: " ·";
+  color: var(--text-disabled);
+}
+
+/* ---- 批量设置状态弹窗 ---- */
+.batch-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.batch-tools .member-search {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+.batch-quick {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.batch-list {
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.batch-group + .batch-group {
+  margin-top: 4px;
+}
+.batch-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-subtle);
+  font-size: var(--fs-xs);
+}
+.batch-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.batch-expand:hover {
+  color: var(--text-primary);
+}
+.batch-members {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 2px 6px;
+}
+.batch-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.batch-member:hover {
+  background: var(--bg-hover);
+}
+.batch-member .member-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-disabled);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-member.is-leave .member-name {
+  color: var(--text-muted);
+}
+
+/* ---- 签到核对弹窗 ---- */
+.ck-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ck-file {
+  display: none;
+}
+.ck-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 130px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease;
+}
+.ck-drop:hover {
+  border-color: var(--primary-line);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.ck-drop.hot {
+  border-style: solid;
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.ck-drop.busy {
+  pointer-events: none;
+  color: var(--text-muted);
+}
+.ck-drop-art {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ck-drop-title {
+  font-size: var(--fs-sm);
+}
+.ck-drop-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ck-alert {
+  padding: 7px 10px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.ck-alert.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger-line);
+}
+.ck-sum {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.ck-sum b {
+  font-weight: 600;
+}
+.ck-sum b.warn {
+  color: var(--warning);
+}
+.ck-relink {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ck-relink:hover {
+  color: var(--primary);
+}
+.ck-leavefirst {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.ck-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ck-sec-title {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.ck-matched {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 120px;
+  overflow: auto;
+}
+.ck-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 11px;
+}
+
 .export-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4416,7 +4757,7 @@ details.ui-fold[open] > summary::before {
 
 @media (max-width: 1180px) {
   .project-side {
-    width: 300px;
+    width: 316px;
   }
   .project-setup .field {
     width: 168px;
@@ -4424,7 +4765,7 @@ details.ui-fold[open] > summary::before {
 }
 @media (max-width: 980px) {
   .project-side {
-    width: 268px;
+    width: 284px;
   }
   .project-setup .field {
     width: 148px;

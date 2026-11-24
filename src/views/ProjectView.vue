@@ -59,13 +59,17 @@ import {
 } from "../engine/unitMatch";
 import { preferences } from "../preferences";
 import { printImage, saveFile } from "../platform/files";
+import { listenNativeFileDrop } from "../platform/nativeFileDrop";
 import SeatBoardPane from "../components/project/SeatBoardPane.vue";
 import RulesPanel from "../components/RulesPanel.vue";
 import ImportDialog from "../components/roster/ImportDialog.vue";
+import { buildAnalysis, cleanCell } from "../engine/rosterAdaptive";
+import { parseNameCell, readRosterSheet } from "../engine/rosterImport";
 import {
   COLOR_PRESETS,
   UiButton,
   UiChart,
+  UiCheckbox,
   UiColorPicker,
   UiInput,
   UiSelect,
@@ -81,9 +85,7 @@ import {
   type ChartOption,
 } from "../ui/charts";
 
-const sideTab = ref<
-  "overview" | "props" | "list" | "leave" | "rules" | "export"
->("list");
+const sideTab = ref<"overview" | "props" | "list" | "rules" | "export">("list");
 
 const selectedId = ref<string>(state.projects[0]?.id ?? "");
 const draft = ref<Project | null>(null);
@@ -2201,13 +2203,379 @@ async function submitAdd(): Promise<void> {
   );
 }
 
+// ---- 名单分组：默认按单位收起，展开看具体人 ----
+interface MemberGroup {
+  unitId: string;
+  name: string;
+  members: Member[];
+  leaveCount: number;
+}
+const expandedUnits = ref<Set<string>>(new Set());
+
+function toggleUnitGroup(unitId: string): void {
+  const s = new Set(expandedUnits.value);
+  if (s.has(unitId)) s.delete(unitId);
+  else s.add(unitId);
+  expandedUnits.value = s;
+}
+
+function buildGroups(source: Member[]): MemberGroup[] {
+  const units = roster.value?.units ?? [];
+  const orderIdx = new Map(units.map((u, i) => [u.id, i]));
+  const map = new Map<string, Member[]>();
+  for (const m of source) {
+    const key = m.unitId || "__none__";
+    const arr = map.get(key);
+    if (arr) arr.push(m);
+    else map.set(key, [m]);
+  }
+  const out: MemberGroup[] = [];
+  for (const [unitId, members] of map) {
+    out.push({
+      unitId,
+      name:
+        unitId === "__none__"
+          ? "未分单位"
+          : (unitById.value.get(unitId)?.name ?? "未分单位"),
+      members,
+      leaveCount: members.filter((m) => m.status === "leave").length,
+    });
+  }
+  out.sort(
+    (a, b) =>
+      (orderIdx.get(a.unitId) ?? 9999) - (orderIdx.get(b.unitId) ?? 9999),
+  );
+  return out;
+}
+
+const memberGroups = computed<MemberGroup[] | null>(() => {
+  if (rosterQuery.value.trim()) return null;
+  return buildGroups(participants.value);
+});
+
+/** 名单渲染分段：搜索时平铺，其余按单位分组（未展开的组只显示组头） */
+const listSections = computed<
+  { key: string; group: MemberGroup | null; members: Member[] }[]
+>(() => {
+  const groups = memberGroups.value;
+  if (!groups)
+    return [
+      { key: "__flat__", group: null, members: filteredParticipants.value },
+    ];
+  return groups.map((g) => ({
+    key: g.unitId,
+    group: g,
+    members: expandedUnits.value.has(g.unitId) ? g.members : [],
+  }));
+});
+
+// ---- 批量状态：弹窗里按单位勾选，一键设为在位 / 请假 ----
+const batchOpen = ref(false);
+const batchQuery = ref("");
+const batchPicked = ref<Set<string>>(new Set());
+const batchExpanded = ref<Set<string>>(new Set());
+
+function openBatch(): void {
+  batchQuery.value = "";
+  batchPicked.value = new Set();
+  batchExpanded.value = new Set();
+  batchOpen.value = true;
+}
+
+const batchGroups = computed<MemberGroup[]>(() => {
+  const q = batchQuery.value.trim().toLowerCase();
+  let source = participants.value;
+  if (q) {
+    source = source.filter((m) => {
+      const rank = rankById.value.get(m.rankId)?.name ?? "";
+      const unit = unitById.value.get(m.unitId)?.name ?? "";
+      return [m.name, rank, unit, m.duty ?? ""].some((s) =>
+        s.toLowerCase().includes(q),
+      );
+    });
+  }
+  return buildGroups(source);
+});
+
+const batchSections = computed(() =>
+  batchGroups.value.map((g) => ({
+    group: g,
+    members:
+      batchExpanded.value.has(g.unitId) || batchQuery.value.trim()
+        ? g.members
+        : [],
+  })),
+);
+
+function toggleBatchExpand(unitId: string): void {
+  const s = new Set(batchExpanded.value);
+  if (s.has(unitId)) s.delete(unitId);
+  else s.add(unitId);
+  batchExpanded.value = s;
+}
+
+function toggleBatchGroup(g: MemberGroup): void {
+  const s = new Set(batchPicked.value);
+  const allIn = g.members.every((m) => s.has(m.id));
+  for (const m of g.members) {
+    if (allIn) s.delete(m.id);
+    else s.add(m.id);
+  }
+  batchPicked.value = s;
+}
+
+function toggleBatchMember(id: string): void {
+  const s = new Set(batchPicked.value);
+  if (s.has(id)) s.delete(id);
+  else s.add(id);
+  batchPicked.value = s;
+}
+
+function batchGroupChecked(g: MemberGroup): boolean {
+  return (
+    g.members.length > 0 && g.members.every((m) => batchPicked.value.has(m.id))
+  );
+}
+
+async function applyBatchStatus(status: AttendStatus): Promise<void> {
+  const snap = draft.value?.rosterSnapshot;
+  if (!draft.value || !snap || !batchPicked.value.size) return;
+  let changed = 0;
+  let removed = 0;
+  for (const id of batchPicked.value) {
+    const target = snap.members.find((x) => x.id === id);
+    if (!target || target.status === status) continue;
+    target.status = status;
+    changed++;
+    if (status === "leave") {
+      if (draft.value.assignments.some((a) => a.memberId === id)) removed++;
+      draft.value.assignments = draft.value.assignments.filter(
+        (a) => a.memberId !== id,
+      );
+    }
+  }
+  batchOpen.value = false;
+  if (!changed) {
+    flash("所选人员状态未变化");
+    return;
+  }
+  autosaveSeq++;
+  window.clearTimeout(autosaveTimer);
+  await saveProject(draft.value);
+  dirty.value = false;
+  flash(
+    `已将 ${changed} 人设为「${status === "leave" ? "请假" : "在位"}」${
+      removed ? `，${removed} 人已移出座位` : ""
+    }`,
+  );
+}
+
+// ---- 签到核对：读入带姓名的文档，匹配到的人设为在位，未匹配的提示添加 ----
+const checkinOpen = ref(false);
+const checkinBusy = ref(false);
+const checkinError = ref("");
+const checkinDropHot = ref(false);
+const checkinInputEl = ref<HTMLInputElement | null>(null);
+const checkinNames = ref<string[]>([]);
+const checkinLeaveFirst = ref(false);
+const checkinAddPicked = ref<Set<string>>(new Set());
+const checkinUnitId = ref("");
+const checkinRankId = ref("");
+const checkinFileName = ref("");
+
+interface CheckinResult {
+  matched: { name: string; members: Member[] }[];
+  missing: string[];
+}
+const checkinResult = ref<CheckinResult | null>(null);
+
+const checkinAddCount = computed(() => checkinAddPicked.value.size);
+
+function openCheckin(): void {
+  checkinError.value = "";
+  checkinBusy.value = false;
+  checkinDropHot.value = false;
+  checkinNames.value = [];
+  checkinLeaveFirst.value = false;
+  checkinAddPicked.value = new Set();
+  checkinResult.value = null;
+  checkinFileName.value = "";
+  checkinUnitId.value = snapRootUnitId.value;
+  checkinRankId.value = "";
+  checkinOpen.value = true;
+}
+
+function toggleCheckinAdd(name: string): void {
+  const s = new Set(checkinAddPicked.value);
+  if (s.has(name)) s.delete(name);
+  else s.add(name);
+  checkinAddPicked.value = s;
+}
+
+async function readCheckinFile(file: File | null | undefined): Promise<void> {
+  if (!file || checkinBusy.value) return;
+  checkinBusy.value = true;
+  checkinError.value = "";
+  try {
+    const raw = await readRosterSheet(file);
+    const s = buildAnalysis(raw, snapUnits.value, snapRanks.value);
+    const nameCol = s.columns.find((c) => c.role === "name");
+    if (!nameCol) throw new Error("未识别到姓名列，请检查文档表头");
+    const names: string[] = [];
+    for (const row of s.dataRows) {
+      const rawText = cleanCell(row[nameCol.index] ?? "");
+      if (!rawText) continue;
+      // 单元格可能是「张三、李四」多人连写，用共享的人名拆解兜底
+      for (const n of parseNameCell(rawText).names) {
+        if (n && !names.includes(n)) names.push(n);
+      }
+    }
+    if (!names.length) throw new Error("文件中没有读到名字");
+    const keys = new Map<string, Member[]>();
+    for (const m of participants.value) {
+      const k = nameKey(m.name);
+      const arr = keys.get(k);
+      if (arr) arr.push(m);
+      else keys.set(k, [m]);
+    }
+    const matched: { name: string; members: Member[] }[] = [];
+    const missing: string[] = [];
+    const seen = new Set<string>();
+    for (const n of names) {
+      const k = nameKey(n);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      const hit = keys.get(k);
+      if (hit) matched.push({ name: n, members: hit });
+      else missing.push(n);
+    }
+    checkinFileName.value = file.name;
+    checkinNames.value = names;
+    checkinResult.value = { matched, missing };
+    checkinAddPicked.value = new Set(missing);
+  } catch (e: any) {
+    checkinResult.value = null;
+    checkinNames.value = [];
+    checkinFileName.value = "";
+    checkinError.value = e?.message || String(e) || "读取文件失败";
+  } finally {
+    checkinBusy.value = false;
+  }
+}
+
+function onCheckinPick(e: Event): void {
+  void readCheckinFile((e.target as HTMLInputElement).files?.[0]);
+}
+
+function onCheckinDrop(e: DragEvent): void {
+  checkinDropHot.value = false;
+  void readCheckinFile(e.dataTransfer?.files?.[0]);
+}
+
+async function applyCheckin(): Promise<void> {
+  const res = checkinResult.value;
+  const snap = draft.value?.rosterSnapshot;
+  if (!draft.value || !snap || !res) return;
+  const unitId = checkinUnitId.value || snap.units[0]?.id;
+  const rankId =
+    checkinRankId.value ||
+    [...snap.ranks].sort((a, b) => b.order - a.order)[0]?.id;
+  if (!unitId || !rankId) {
+    flash("名册里至少需要一个单位和一个职级");
+    return;
+  }
+
+  let leaveCount = 0;
+  if (checkinLeaveFirst.value) {
+    for (const m of participants.value) {
+      const target = snap.members.find((x) => x.id === m.id);
+      if (target && target.status !== "leave") {
+        target.status = "leave";
+        leaveCount++;
+      }
+    }
+    draft.value.assignments = [];
+  }
+
+  let presentCount = 0;
+  const touched: string[] = [];
+  for (const g of res.matched) {
+    for (const m of g.members) {
+      const target = snap.members.find((x) => x.id === m.id);
+      if (!target) continue;
+      if (target.status !== "present") {
+        target.status = "present";
+        presentCount++;
+      }
+      touched.push(m.id);
+    }
+  }
+
+  const added: string[] = [];
+  for (const name of res.missing) {
+    if (!checkinAddPicked.value.has(name)) continue;
+    const member: Member = {
+      id: uid("m"),
+      name,
+      unitId,
+      rankId,
+      aliases: [],
+      status: "present",
+      order: snap.members.length,
+    };
+    snap.members.push(member);
+    added.push(member.id);
+    touched.push(member.id);
+  }
+
+  const wasEmpty = !draft.value.participantIds.length;
+  draft.value.participantIds = wasEmpty
+    ? snap.members.map((m) => m.id)
+    : [...new Set([...draft.value.participantIds, ...touched])];
+
+  autosaveSeq++;
+  window.clearTimeout(autosaveTimer);
+  await saveProject(draft.value);
+  dirty.value = false;
+  checkinOpen.value = false;
+  const parts: string[] = [];
+  if (leaveCount) parts.push(`已先将全部 ${leaveCount} 人设为请假`);
+  parts.push(`${presentCount} 人设为在位`);
+  if (added.length) parts.push(`新增 ${added.length} 人`);
+  flash(parts.join("；"));
+}
+
+/** 桌面端原生拖放：签到核对弹窗打开时接管拖入的文件 */
+let stopCheckinDrop: (() => void) | null = null;
+void listenNativeFileDrop({
+  onHover: (active) => {
+    if (checkinOpen.value) checkinDropHot.value = active;
+  },
+  onDrop: (files) => {
+    if (checkinOpen.value) void readCheckinFile(files[0]?.file ?? null);
+  },
+  onError: (message) => {
+    if (checkinOpen.value) checkinError.value = message;
+  },
+}).then((stop) => {
+  stopCheckinDrop = stop;
+});
+onBeforeUnmount(() => stopCheckinDrop?.());
+
 // ---- 导入名册：复用名册页的批量导入（文件解析 / 列角色 / 逐行确认） ----
 const importOpen = ref(false);
 /** 导入结果：跳过的重名名单（默认拒绝），避免静默丢弃 */
-const importResult = ref<{ imported: number; skipped: { name: string; unit: string }[] } | null>(null);
+const importResult = ref<{
+  imported: number;
+  skipped: { name: string; unit: string }[];
+} | null>(null);
 
 /** 学习别名：只回写指向已有实体的映射，避免把错误映射固化下来 */
-function learnUnitAlias(units: UnitNode[], unitId: string, raw: string): boolean {
+function learnUnitAlias(
+  units: UnitNode[],
+  unitId: string,
+  raw: string,
+): boolean {
   const text = normalizeName(raw);
   const key = nameKey(text);
   const target = units.find((u) => u.id === unitId);
@@ -2224,7 +2592,11 @@ function learnUnitAlias(units: UnitNode[], unitId: string, raw: string): boolean
   return true;
 }
 
-function learnRankAlias(ranks: RankDef[], rankId: string, raw: string): boolean {
+function learnRankAlias(
+  ranks: RankDef[],
+  rankId: string,
+  raw: string,
+): boolean {
   const text = normalizeName(raw);
   const key = nameKey(text);
   const target = ranks.find((r) => r.id === rankId);
@@ -2323,9 +2695,7 @@ function handleProjectImport(payload: {
     snap.ranks.push(fallbackRank);
   }
 
-  const rankIdOf = (
-    row: (typeof payload.rows)[number],
-  ): string => {
+  const rankIdOf = (row: (typeof payload.rows)[number]): string => {
     if (row.rankId && snap.ranks.some((r) => r.id === row.rankId))
       return row.rankId;
     const key = nameKey(row.newRank ?? "");
@@ -2340,7 +2710,8 @@ function handleProjectImport(payload: {
   const createdIds: string[] = [];
   const skipped: { name: string; unit: string }[] = [];
   let learned = 0;
-  const dupKey = (name: string, unitId: string) => `${name.trim()}\u0000${unitId}`;
+  const dupKey = (name: string, unitId: string) =>
+    `${name.trim()}\u0000${unitId}`;
   const seen = new Set(snap.members.map((m) => dupKey(m.name, m.unitId)));
 
   payload.rows.forEach((row, i) => {
@@ -3180,13 +3551,6 @@ async function restoreSnap(id: string): Promise<void> {
             </button>
             <button
               class="tab"
-              :class="{ active: sideTab === 'leave' }"
-              @click="sideTab = 'leave'"
-            >
-              请假
-            </button>
-            <button
-              class="tab"
               :class="{ active: sideTab === 'rules' }"
               @click="sideTab = 'rules'"
             >
@@ -3247,7 +3611,6 @@ async function restoreSnap(id: string): Promise<void> {
                   empty-text="布局里没有可用座位"
                 />
               </div>
-
             </section>
 
             <!-- 选区属性：单选单元格或多选共用，框选结果直接作用于此 -->
@@ -3463,6 +3826,12 @@ async function restoreSnap(id: string): Promise<void> {
                 <button type="button" class="btn sm" @click="importOpen = true">
                   <Icon name="import" :size="12" />导入名册
                 </button>
+                <button type="button" class="btn sm" @click="openBatch">
+                  <Icon name="selectAll" :size="12" />批量
+                </button>
+                <button type="button" class="btn sm" @click="openCheckin">
+                  <Icon name="check" :size="12" />签到核对
+                </button>
               </div>
 
               <div v-if="rosterDiff.length" class="roster-stale">
@@ -3478,78 +3847,109 @@ async function restoreSnap(id: string): Promise<void> {
               </div>
 
               <div class="member-list">
-                <div
-                  v-for="m in filteredParticipants"
-                  :key="m.id"
-                  class="member-row is-clickable"
-                  role="button"
-                  tabindex="0"
-                  :class="{
-                    'is-leave': m.status === 'leave',
-                    'is-focus':
-                      focusedSeat &&
-                      draft.assignments.some(
-                        (a) => a.memberId === m.id && a.seatId === focusedSeat,
-                      ),
-                  }"
-                  @click="focusMember(m)"
-                  @keydown.enter.prevent="focusMember(m)"
-                >
-                  <span
-                    class="dot"
-                    :style="{
-                      background: rankById.get(m.rankId)?.color ?? '#c9d1d4',
-                    }"
-                  />
-                  <span class="member-name">{{ m.name }}</span>
-                  <span class="member-hint" :title="memberHint(m)">{{
-                    memberHint(m)
-                  }}</span>
-                  <span
-                    v-if="m.duty"
-                    class="member-duty"
-                    :title="`职务：${m.duty}`"
-                    >{{ m.duty }}</span
+                <template v-for="sec in listSections" :key="sec.key">
+                  <button
+                    v-if="sec.group"
+                    type="button"
+                    class="unit-group-head"
+                    :aria-expanded="expandedUnits.has(sec.group.unitId)"
+                    @click="toggleUnitGroup(sec.group.unitId)"
                   >
-                  <span
-                    v-if="fixedSeatOf(m)"
-                    class="tag ok"
-                    :title="`位置已固定：${seatLabel(fixedSeatOf(m))}`"
-                    >固定</span
-                  >
-                  <span
-                    v-if="
-                      m.status !== 'leave' &&
-                      unseatedMembers.some((u) => u.id === m.id)
-                    "
-                    class="tag warn"
-                    >未排</span
-                  >
-                  <span class="grow" />
+                    <Icon
+                      name="chevronRight"
+                      :size="10"
+                      class="ug-chevron"
+                      :class="{
+                        open: expandedUnits.has(sec.group.unitId),
+                      }"
+                    />
+                    <span class="ug-name">{{ sec.group.name }}</span>
+                    <span class="grow" />
+                    <span v-if="sec.group.leaveCount" class="ug-leave"
+                      >请假 {{ sec.group.leaveCount }}</span
+                    >
+                    <span class="ug-count"
+                      >{{ sec.group.members.length }} 人</span
+                    >
+                  </button>
                   <div
-                    class="status-toggle"
-                    role="group"
-                    :aria-label="`${m.name} 状态`"
+                    v-for="m in sec.members"
+                    :key="m.id"
+                    class="member-row is-clickable"
+                    role="button"
+                    tabindex="0"
+                    :class="{
+                      'is-grouped': !!sec.group,
+                      'is-leave': m.status === 'leave',
+                      'is-focus':
+                        focusedSeat &&
+                        draft.assignments.some(
+                          (a) =>
+                            a.memberId === m.id && a.seatId === focusedSeat,
+                        ),
+                    }"
+                    @click="focusMember(m)"
+                    @keydown.enter.prevent="focusMember(m)"
                   >
-                    <button
-                      type="button"
-                      class="st-btn"
-                      :class="{ on: m.status === 'present' }"
-                      @click.stop="setMemberStatus(m, 'present')"
+                    <span
+                      class="dot"
+                      :style="{
+                        background: rankById.get(m.rankId)?.color ?? '#c9d1d4',
+                      }"
+                    />
+                    <span class="member-name">{{ m.name }}</span>
+                    <span class="member-hint" :title="memberHint(m)">{{
+                      memberHint(m)
+                    }}</span>
+                    <span
+                      v-if="m.duty"
+                      class="member-duty"
+                      :title="`职务：${m.duty}`"
+                      >{{ m.duty }}</span
                     >
-                      在位
-                    </button>
-                    <button
-                      type="button"
-                      class="st-btn leave"
-                      :class="{ on: m.status === 'leave' }"
-                      @click.stop="setMemberStatus(m, 'leave')"
+                    <span
+                      v-if="fixedSeatOf(m)"
+                      class="tag ok"
+                      :title="`位置已固定：${seatLabel(fixedSeatOf(m))}`"
+                      >固定</span
                     >
-                      请假
-                    </button>
+                    <span
+                      v-if="
+                        m.status !== 'leave' &&
+                        unseatedMembers.some((u) => u.id === m.id)
+                      "
+                      class="tag warn"
+                      >未排</span
+                    >
+                    <span class="grow" />
+                    <div
+                      class="status-toggle"
+                      role="group"
+                      :aria-label="`${m.name} 状态`"
+                    >
+                      <button
+                        type="button"
+                        class="st-btn"
+                        :class="{ on: m.status === 'present' }"
+                        @click.stop="setMemberStatus(m, 'present')"
+                      >
+                        在位
+                      </button>
+                      <button
+                        type="button"
+                        class="st-btn leave"
+                        :class="{ on: m.status === 'leave' }"
+                        @click.stop="setMemberStatus(m, 'leave')"
+                      >
+                        请假
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div v-if="!filteredParticipants.length" class="caption">
+                </template>
+                <div
+                  v-if="!listSections.some((s) => s.members.length || s.group)"
+                  class="caption"
+                >
                   {{
                     participants.length
                       ? "没有匹配的人员，换个关键词试试。"
@@ -3557,7 +3957,6 @@ async function restoreSnap(id: string): Promise<void> {
                   }}
                 </div>
               </div>
-              <p class="caption member-note">请假后立即移出座位。</p>
 
               <p
                 v-if="unseatedMembers.length"
@@ -3566,41 +3965,6 @@ async function restoreSnap(id: string): Promise<void> {
               >
                 未排到座位：{{ unseatedMembers.map((m) => m.name).join("、") }}
               </p>
-            </section>
-
-            <section v-else-if="sideTab === 'leave'" class="side-section">
-              <div class="side-head">
-                <span class="side-title">请假人员</span>
-                <span class="tag warn">{{ leaveMembers.length }} 人</span>
-              </div>
-
-              <div class="member-list" style="margin-top: 10px">
-                <div
-                  v-for="m in leaveMembers"
-                  :key="m.id"
-                  class="member-row is-leave"
-                >
-                  <span
-                    class="dot"
-                    :style="{
-                      background: rankById.get(m.rankId)?.color ?? '#c9d1d4',
-                    }"
-                  />
-                  <span class="member-name">{{ m.name }}</span>
-                  <span class="grow" />
-                  <button
-                    type="button"
-                    class="btn xs"
-                    @click="setMemberStatus(m, 'present')"
-                  >
-                    恢复在位
-                  </button>
-                </div>
-                <div v-if="!leaveMembers.length" class="side-empty">
-                  <Icon name="users" :size="20" />
-                  <p>暂无请假人员。</p>
-                </div>
-              </div>
             </section>
 
             <section
@@ -3828,10 +4192,7 @@ async function restoreSnap(id: string): Promise<void> {
   </UiModal>
 
   <!-- 重命名 -->
-  <UiModal
-    v-model="renameOpen"
-    title="重命名项目"
-  >
+  <UiModal v-model="renameOpen" title="重命名项目">
     <div class="field">
       <label>项目名称</label>
       <UiInput v-model="renameValue" @keyup.enter="confirmRename" />
@@ -4014,10 +4375,7 @@ async function restoreSnap(id: string): Promise<void> {
     </div>
     <div class="field">
       <label>职务（可留空，仅展示与筛选）</label>
-      <UiInput
-        v-model="addDuty"
-        placeholder="如：主任、处长、副主任"
-      />
+      <UiInput v-model="addDuty" placeholder="如：主任、处长、副主任" />
     </div>
     <template #footer>
       <UiButton variant="ghost" @click="addOpen = false">取消</UiButton>
@@ -4027,6 +4385,231 @@ async function restoreSnap(id: string): Promise<void> {
         @click="submitAdd"
       >
         添加
+      </UiButton>
+    </template>
+  </UiModal>
+
+  <!-- 批量设置状态：按单位勾选，一键在位 / 请假 -->
+  <UiModal v-model="batchOpen" title="批量设置状态" width="560px">
+    <div class="batch-tools">
+      <label class="member-search">
+        <Icon name="search" :size="12" />
+        <input
+          v-model="batchQuery"
+          type="search"
+          placeholder="搜索姓名 / 单位 / 职级 / 职务"
+        />
+        <button
+          v-if="batchQuery"
+          type="button"
+          class="ms-clear"
+          aria-label="清空搜索"
+          @click="batchQuery = ''"
+        >
+          ×
+        </button>
+      </label>
+      <div class="batch-quick">
+        <button
+          type="button"
+          class="btn xs"
+          @click="batchPicked = new Set(participants.map((m) => m.id))"
+        >
+          全选
+        </button>
+        <button
+          type="button"
+          class="btn xs"
+          :disabled="!batchPicked.size"
+          @click="batchPicked = new Set()"
+        >
+          清空
+        </button>
+      </div>
+    </div>
+    <div class="batch-list">
+      <div v-for="s in batchSections" :key="s.group.unitId" class="batch-group">
+        <div class="batch-group-head">
+          <UiCheckbox
+            :model-value="batchGroupChecked(s.group)"
+            @update:model-value="toggleBatchGroup(s.group)"
+          />
+          <button
+            type="button"
+            class="batch-expand"
+            :aria-expanded="batchExpanded.has(s.group.unitId)"
+            @click="toggleBatchExpand(s.group.unitId)"
+          >
+            <Icon
+              name="chevronRight"
+              :size="10"
+              class="ug-chevron"
+              :class="{ open: batchExpanded.has(s.group.unitId) }"
+            />
+            <span>{{ s.group.name }}</span>
+          </button>
+          <span class="grow" />
+          <span v-if="s.group.leaveCount" class="ug-leave"
+            >请假 {{ s.group.leaveCount }}</span
+          >
+          <span class="ug-count">{{ s.group.members.length }} 人</span>
+        </div>
+        <div v-if="s.members.length" class="batch-members">
+          <label
+            v-for="m in s.members"
+            :key="m.id"
+            class="batch-member"
+            :class="{ 'is-leave': m.status === 'leave' }"
+          >
+            <UiCheckbox
+              :model-value="batchPicked.has(m.id)"
+              @update:model-value="toggleBatchMember(m.id)"
+            />
+            <span class="member-name">{{ m.name }}</span>
+            <span class="member-hint">{{ memberHint(m) }}</span>
+            <span class="grow" />
+            <span class="tag" :class="m.status === 'leave' ? 'warn' : 'ok'">
+              {{ m.status === "leave" ? "请假" : "在位" }}
+            </span>
+          </label>
+        </div>
+      </div>
+      <div v-if="!batchGroups.length" class="caption">没有匹配的人员</div>
+    </div>
+    <template #footer>
+      <UiButton variant="ghost" @click="batchOpen = false">取消</UiButton>
+      <UiButton
+        :disabled="!batchPicked.size"
+        @click="applyBatchStatus('present')"
+      >
+        设为在位（{{ batchPicked.size }}）
+      </UiButton>
+      <UiButton
+        variant="primary"
+        :disabled="!batchPicked.size"
+        @click="applyBatchStatus('leave')"
+      >
+        设为请假（{{ batchPicked.size }}）
+      </UiButton>
+    </template>
+  </UiModal>
+
+  <!-- 签到核对：读带姓名的文档，匹配的人设为在位，未匹配的提示添加 -->
+  <UiModal v-model="checkinOpen" title="签到核对" width="560px">
+    <div
+      class="ck-body"
+      @dragenter.prevent="checkinDropHot = true"
+      @dragover.prevent
+      @dragleave="checkinDropHot = false"
+      @drop.prevent="onCheckinDrop"
+    >
+      <input
+        ref="checkinInputEl"
+        type="file"
+        class="ck-file"
+        accept=".xlsx,.xls,.xlsm,.docx,.csv,.txt,.tsv"
+        @change="onCheckinPick"
+      />
+
+      <template v-if="!checkinResult">
+        <button
+          type="button"
+          class="ck-drop"
+          :class="{ hot: checkinDropHot, busy: checkinBusy }"
+          @click="checkinInputEl?.click()"
+        >
+          <span class="ck-drop-art insp-head-art"
+            ><Icon name="import" :size="24"
+          /></span>
+          <span class="ck-drop-title">{{
+            checkinBusy
+              ? "正在读取…"
+              : checkinDropHot
+                ? "松开即可读取"
+                : "选择文件，或把文件拖到这里"
+          }}</span>
+          <span class="ck-drop-hint">读取文档中的姓名列</span>
+        </button>
+        <div v-if="checkinError" class="ck-alert error">{{ checkinError }}</div>
+      </template>
+
+      <template v-else>
+        <div class="ck-sum">
+          识别 <b>{{ checkinNames.length }}</b> 个名字 · 匹配
+          <b>{{ checkinResult.matched.length }}</b> 人 · 未匹配
+          <b :class="{ warn: checkinResult.missing.length }">{{
+            checkinResult.missing.length
+          }}</b>
+          <button type="button" class="ck-relink" @click="checkinResult = null">
+            重选文件
+          </button>
+        </div>
+
+        <label class="ck-leavefirst">
+          <UiCheckbox
+            v-model="checkinLeaveFirst"
+            label="应用前先把全部人员设为请假"
+          />
+        </label>
+
+        <div class="ck-section">
+          <div class="ck-sec-title">
+            未在名单<span v-if="checkinResult.missing.length"
+              >（勾选后添加到本项目）</span
+            >
+          </div>
+          <div v-if="checkinResult.missing.length">
+            <div class="field-row">
+              <div class="field">
+                <label>单位</label>
+                <UiSelect v-model="checkinUnitId" :options="addUnitOptions" />
+              </div>
+              <div class="field">
+                <label>职级</label>
+                <UiSelect v-model="checkinRankId" :options="addRankOptions" />
+              </div>
+            </div>
+            <div class="batch-members">
+              <label
+                v-for="n in checkinResult.missing"
+                :key="n"
+                class="batch-member"
+              >
+                <UiCheckbox
+                  :model-value="checkinAddPicked.has(n)"
+                  @update:model-value="toggleCheckinAdd(n)"
+                />
+                <span class="member-name">{{ n }}</span>
+              </label>
+            </div>
+          </div>
+          <div v-else class="caption">全部名字都在名单中。</div>
+        </div>
+
+        <div v-if="checkinResult.matched.length" class="ck-section">
+          <div class="ck-sec-title">将设为在位</div>
+          <div class="ck-matched">
+            <span
+              v-for="g in checkinResult.matched"
+              :key="g.name"
+              class="ck-chip"
+              >{{ g.name }}</span
+            >
+          </div>
+        </div>
+
+        <div v-if="checkinError" class="ck-alert error">{{ checkinError }}</div>
+      </template>
+    </div>
+    <template #footer>
+      <UiButton variant="ghost" @click="checkinOpen = false">取消</UiButton>
+      <UiButton
+        v-if="checkinResult"
+        variant="primary"
+        :disabled="checkinBusy"
+        @click="applyCheckin"
+      >
+        应用{{ checkinAddCount ? `（新增 ${checkinAddCount} 人）` : "" }}
       </UiButton>
     </template>
   </UiModal>
@@ -4046,15 +4629,23 @@ async function restoreSnap(id: string): Promise<void> {
     :model-value="!!importResult"
     title="导入结果"
     width="460px"
-    @update:model-value="(v: boolean) => { if (!v) importResult = null }"
+    @update:model-value="
+      (v: boolean) => {
+        if (!v) importResult = null;
+      }
+    "
   >
     <div v-if="importResult" class="import-result">
       <div class="import-result-line">
         成功导入 <b>{{ importResult.imported }}</b> 人
-        <span v-if="importResult.skipped.length">，跳过 <b class="warn">{{ importResult.skipped.length }}</b> 人</span>
+        <span v-if="importResult.skipped.length"
+          >，跳过 <b class="warn">{{ importResult.skipped.length }}</b> 人</span
+        >
       </div>
       <div v-if="importResult.skipped.length" class="import-skip">
-        <div class="import-skip-title">已跳过：重名 <span>（姓名一致 + 同单位）</span></div>
+        <div class="import-skip-title">
+          已跳过：重名 <span>（姓名一致 + 同单位）</span>
+        </div>
         <ul>
           <li v-for="(s, i) in importResult.skipped" :key="i">
             <span class="import-skip-name">{{ s.name }}</span>
